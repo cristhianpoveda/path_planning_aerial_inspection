@@ -1,0 +1,20 @@
+cat << 'EOF' > .gitignore
+# ROS 2 Build folders
+build/
+install/
+log/
+test/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Data logs
+*.csv
+*.bag
+rosbag2_*/
+
+# IDEs
+.vscode/
+.idea/
+EOF
