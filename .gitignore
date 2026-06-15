@@ -3,7 +3,7 @@ cat << 'EOF' > .gitignore
 build/
 install/
 log/
-test/
+tests/
 
 # Python caches
 __pycache__/
