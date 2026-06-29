@@ -1,8 +1,0 @@
-h264_tcp_decode:
-  ros__parameters:
-    host: "192.168.50.18"      # phone IP on the lab LAN
-    port: 8900
-    topic: "/camera/image_raw"
-    frame_id: "camera_link"
-    reconnect_backoff_s: 2.0
-    encoding: "rgb8"
