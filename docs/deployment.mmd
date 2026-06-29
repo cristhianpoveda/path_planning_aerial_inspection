@@ -1,0 +1,39 @@
+---
+config:
+  layout: dagre
+---
+flowchart TB
+ subgraph DRONE["Drone platform — EXTERNAL"]
+        N3["Naza/N3 flight controller<br>model: &lt;MODEL&gt;"]
+        RC["RC transmitter<br>model: &lt;MODEL&gt;<br>link to drone: &lt;RC LINK TYPE&gt;"]
+  end
+ subgraph PHONE["Phone — &lt;MODEL&gt; / &lt;OS + VERSION&gt;"]
+        WB["Modified Wildbridge (app)<br>role: validate cmds, bridge telemetry/video<br>IP on LAN: &lt;PHONE_IP&gt;"]
+  end
+ subgraph C1["container: bridge"]
+        C1d["image: &lt;IMAGE:TAG&gt;<br>ROS node(s): &lt;NODE(S)&gt;<br>ports: &lt;HOST:CONTAINER&gt;<br>volumes: &lt;HOST_PATH:CONTAINER_PATH&gt;<br>devices: &lt;e.g. /dev/dri, gpu&gt;<br>env: &lt;ROS_DOMAIN_ID, etc.&gt;"]
+  end
+ subgraph C2["container: &lt;NAME&gt;"]
+        C2d["image: &lt;IMAGE:TAG&gt;<br>ROS node(s): &lt;NODE(S)&gt;<br>ports: &lt;HOST:CONTAINER&gt;<br>volumes: &lt;HOST_PATH:CONTAINER_PATH&gt;<br>devices: &lt;...&gt;<br>env: &lt;...&gt;"]
+  end
+ subgraph C3["container: &lt;NAME&gt;"]
+        C3d["image: &lt;IMAGE:TAG&gt;<br>ROS node(s): &lt;NODE(S)&gt;<br>ports: &lt;HOST:CONTAINER&gt;<br>volumes: &lt;HOST_PATH:CONTAINER_PATH&gt;<br>devices: &lt;...&gt;<br>env: &lt;...&gt;"]
+  end
+ subgraph LAPTOP["Ground Station — Docker host"]
+        LMETA["OS: Ubuntu 22.04; · IP on LAN: 192.168.50.129<br>docker network: host · ipc: host (shared memory)<br>DDS: CycloneDDS · ROS_DOMAIN_ID: 12"]
+        C1
+        C2
+        C3
+  end
+    RC <-- &lt;RC LINK TYPE&gt; --> N3
+    WB -- relayed cmds<br>&lt;LINK: RC cable/BT/USB&gt; --> RC
+    N3 -- telemetry source<br>&lt;LINK&gt; --> WB
+    WB -- telemetry + camera<br>TCP · port &lt;PORT&gt; · &lt;rate/bitrate&gt; --> C1
+    C1 -- nav commands<br>UDP · port &lt;PORT&gt; --> WB
+    LMETA ~~~ C1
+    C1 -- "DDS (SHM / loopback)<br>topic: &lt;...&gt; (see diagram #3)" --> C2
+    C2 -- "DDS (SHM / loopback)<br>topic: &lt;...&gt; (see diagram #3)" --> C3
+
+    style DRONE fill:#cff6fa,stroke:#999,color:#222,stroke-dasharray:4 3
+    style LAPTOP fill:#eef,stroke:#447,color:#222,stroke-width:2px
+    style PHONE fill:#efe,color:#222,stroke:#474

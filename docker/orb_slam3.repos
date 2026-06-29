@@ -1,0 +1,19 @@
+# Source deps for the localization image. Consumed by the Dockerfile:
+#   vcs import /opt/src < docker/orb_slam3.repos
+#
+# suchetanrs/ORB-SLAM3-ROS2-Docker is a monorepo. After clone, the Dockerfile
+# references its subdirectories: ORB_SLAM3/ (their ORB-SLAM3 fork submodule),
+# orb_slam3_ros2_wrapper/, slam_msgs/. There is no separate slam_msgs repo.
+# Both tags below are confirmed to exist; pinned by tag.
+
+repositories:
+
+  Pangolin:
+    type: git
+    url: https://github.com/stevenlovegrove/Pangolin.git
+    version: v0.9.1
+
+  orb_slam3_ros2_docker:
+    type: git
+    url: https://github.com/suchetanrs/ORB-SLAM3-ROS2-Docker.git
+    version: 1.0.0

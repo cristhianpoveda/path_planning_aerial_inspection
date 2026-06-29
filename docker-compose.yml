@@ -1,0 +1,72 @@
+name: drone-autonomy
+
+# bridge       - DJI -> ROS (WildBridge + adapters + H.264 decode)
+# localization - ORB-SLAM3 (L3/L4) + robot_localization dual-EKF
+#     make up
+#     make shell-bridge
+#     make shell-loc
+
+x-ros-env: &ros-env
+  ROS_DOMAIN_ID: "12"
+  RMW_IMPLEMENTATION: rmw_fastrtps_cpp     # identical in both containers
+  ROS_LOCALHOST_ONLY: "0"
+
+x-build-args: &build-args
+  USERNAME: ros
+  USER_UID: "${UID:-1000}"
+  USER_GID: "${GID:-1000}"
+  DISPLAY: "${DISPLAY}"
+  QT_X11_NO_MITSHM: "1"
+
+services:
+  bridge:
+    build:
+      context: .
+      dockerfile: docker/bridge.Dockerfile
+      args: *build-args
+    network_mode: host
+    ipc: host
+    environment: *ros-env
+    volumes:
+      - ./ros2_ws:/ros2_ws:rw
+      - ./config:/config:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+    # Idle by default; launch the pipeline yourself from `make shell-bridge`.
+    command: ["bash"]
+    stdin_open: true
+    tty: true
+
+  localization:
+    build:
+      context: .
+      dockerfile: docker/localization.Dockerfile
+      args: *build-args
+    network_mode: host
+    ipc: host
+    environment: *ros-env
+    volumes:
+      - ./ros2_ws:/ros2_ws:rw
+      - ./config:/config:ro
+      - maps:/maps:rw               # persists Atlas: L3 writes -> L4 reads
+      - ./bags:/bags:rw
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+    depends_on:
+      - bridge
+      
+    command: ["bash"]
+    stdin_open: true
+    tty: true
+
+  # Optional rviz:  docker compose --profile viz up viz
+  viz:
+    extends: localization
+    profiles: ["viz"]
+    environment:
+      <<: *ros-env
+      DISPLAY: "${DISPLAY}"
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    command: ["rviz2"]
+
+volumes:
+  maps:

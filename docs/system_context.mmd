@@ -1,0 +1,20 @@
+%% System Context Diagram — Indoor Drone Autonomy Stack
+flowchart TD
+    OP(["Operator / safety pilot<br/><i>flies manually, sets goals, takes over via RC</i>"])
+
+    DRONE["Drone platform<br/>(Drone + RC N3)<br/><i>External — RC arbitrates: manual override wins over autonomous</i>"]
+
+    subgraph SYS [" Your system "]
+        WB["Modified Wildbridge (phone)<br/><i>bridges telemetry/video to LAN;<br/>validates commands (loss/corruption) then relays to RC</i>"]
+        STACK["Autonomy stack (Ground Station)<br/><i>decode &middot; tf &middot; localisation &middot; navigation &middot; cmd gen</i>"]
+        STACK -->|"Nav commands<br/>(UDP)"| WB
+        WB -->|"Telemetry (UDP )+ camera streaming<br/>(single-client TCP)"| STACK
+    end
+
+    OP -->|"manual flight + takeover button (mode selector)<br/>At RC — overrides the stack"| DRONE
+    OP -->|"Set goals, start/stop, monitor"| STACK
+    DRONE -->|"Telemetry + live video"| WB
+    WB -->|"Validated commands &rarr; RC &rarr; Drone"| DRONE
+    STACK -.->|"Pose / map / status viz"| OP
+
+    style SYS fill:#eef,stroke:#447,stroke-width:2px
