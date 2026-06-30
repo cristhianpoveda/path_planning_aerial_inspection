@@ -1,0 +1,85 @@
+---
+config:
+  layout: elk
+---
+flowchart LR
+
+    %% ================= BRIDGE service =================
+    subgraph BRIDGE["service: bridge"]
+        DJI["dji_node"]
+        DEC["camera_decoder"]
+    end
+
+    %% ================= LOCALISATION service =================
+    subgraph LOC["service: localisation"]
+        SLAM["slam (monocular VO)"]
+        EKF["ekf (fusion + scale + tf broadcast)"]
+    end
+
+    %% ================= NAVIGATION service =================
+    subgraph NAV["service: navigation"]
+        TRAJ["trajectory_gen (stub)"]
+        WPF["waypoint_follower"]
+        PC["position_controller"]
+    end
+
+    %% ================= EVALUATION service (dev-only) =================
+    subgraph EVAL["service: evaluation"]
+        DB["ros_domains_bridge (domain 0 -> 12)"]
+        CMP["comparison_node"]
+    end
+
+    %% ================= TOPICS =================
+    %% Camera / perception
+    IMG([<img topic e.g. /camera/image_raw>])
+    %% Telemetry-derived (note: stamped with MEASUREMENT time)
+    VEL([<velocity topic>])
+    ALT([<altitude topic>])
+    SATS([<satellite_count topic — for future GNSS/visual switch>])
+    %% Localisation output (SOURCE-AGNOSTIC pose interface)
+    POSE([<pose+covariance topic>])
+    %% Navigation
+    GOAL([<goal / waypoint topic>])
+    SETPT([<setpoint topic — planner to controller>])
+    CMD([<velocity/stick cmd topic>])
+    %% Ground truth (bridged from domain 0)
+    GT([<optitrack pose topic /rigid_bodies/dji_mini4>])
+    %% Transforms
+    TF([/tf  ·  /tf_static])
+
+    %% ================= EDGES: who publishes / subscribes =================
+    %% --- bridge outputs ---
+    DEC -->|"sensor_msgs/Image"| IMG
+    DEC -->|"geometry_msgs/TransformStamped (static cam&harr;body)"| TF
+    DJI -->|"<msg> velocity"| VEL
+    DJI -->|"<msg> altitude"| ALT
+    DJI -->|"<msg> sat count"| SATS
+
+    %% --- localisation ---
+    IMG -->|"sensor_msgs/Image"| SLAM
+    VEL -->|"<msg>"| EKF
+    ALT -->|"<msg>"| EKF
+    SLAM -->|"<up-to-scale odom msg>"| EKF
+    EKF -->|"<pose+cov msg>"| POSE
+    EKF -->|"tf2_msgs/TFMessage (map&rarr;odom&rarr;base_link)"| TF
+
+    %% --- navigation ---
+    POSE -->|"<pose+cov msg>"| PC
+    GOAL -->|"<goal msg>"| TRAJ
+    TRAJ -->|"<path/setpoints>"| WPF
+    WPF -->|"<current setpoint>"| SETPT
+    SETPT -->|"<setpoint msg>"| PC
+    PC -->|"<velocity/stick msg>"| CMD
+
+    %% --- command back to bridge -> drone ---
+    CMD -->|"<velocity/stick msg>"| DJI
+
+    %% --- evaluation (dev-only) ---
+    GT -->|"<pose msg> (domain 0)"| DB
+    DB -->|"<pose msg> (domain 12)"| CMP
+    POSE -->|"<pose+cov msg>"| CMP
+
+    style BRIDGE fill:#efe,stroke:#474,color:#222
+    style LOC fill:#eef,stroke:#447,color:#222
+    style NAV fill:#fef,stroke:#747,color:#222
+    style EVAL fill:#ffe,stroke:#774,color:#222,stroke-dasharray:4 3
