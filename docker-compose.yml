@@ -30,8 +30,7 @@ services:
     volumes:
       - ./ros2_ws:/ros2_ws:rw
       - ./config:/config:ro
-      - /tmp/.X11-unix:/tmp/.X11-unix:ro
-    # Idle by default; launch the pipeline yourself from `make shell-bridge`.
+      
     command: ["bash"]
     stdin_open: true
     tty: true
