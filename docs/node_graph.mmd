@@ -2,84 +2,70 @@
 config:
   layout: elk
 ---
+
 flowchart LR
 
-    %% ================= BRIDGE service =================
+    %% DEFINE GOAL SOURCE
+    GOALSRC["Goal source"]
+
+    %% BRIDGE service
     subgraph BRIDGE["service: bridge"]
         DJI["dji_node"]
         DEC["camera_decoder"]
     end
 
-    %% ================= LOCALISATION service =================
+    %% LOCALISATION service
     subgraph LOC["service: localisation"]
-        SLAM["slam (monocular VO)"]
-        EKF["ekf (fusion + scale + tf broadcast)"]
+        SLAM["V-SLAM"]
+        EKF["EKF (pose estimation + tf broadcast)"]
     end
 
-    %% ================= NAVIGATION service =================
+    %% NAVIGATION service
     subgraph NAV["service: navigation"]
         TRAJ["trajectory_gen (stub)"]
         WPF["waypoint_follower"]
         PC["position_controller"]
     end
 
-    %% ================= EVALUATION service (dev-only) =================
+    %% EVALUATION service (dev-only)
     subgraph EVAL["service: evaluation"]
-        DB["ros_domains_bridge (domain 0 -> 12)"]
+        DB["ros_domains_bridge (0 -> 12)"]
         CMP["comparison_node"]
     end
 
-    %% ================= TOPICS =================
-    %% Camera / perception
-    IMG([<img topic e.g. /camera/image_raw>])
-    %% Telemetry-derived (note: stamped with MEASUREMENT time)
-    VEL([<velocity topic>])
-    ALT([<altitude topic>])
-    SATS([<satellite_count topic — for future GNSS/visual switch>])
-    %% Localisation output (SOURCE-AGNOSTIC pose interface)
-    POSE([<pose+covariance topic>])
-    %% Navigation
-    GOAL([<goal / waypoint topic>])
-    SETPT([<setpoint topic — planner to controller>])
-    CMD([<velocity/stick cmd topic>])
-    %% Ground truth (bridged from domain 0)
-    GT([<optitrack pose topic /rigid_bodies/dji_mini4>])
-    %% Transforms
-    TF([/tf  ·  /tf_static])
+    %% Just to show the relation to my nodes
+    TF([" /tf · /tf_static "])
 
-    %% ================= EDGES: who publishes / subscribes =================
-    %% --- bridge outputs ---
-    DEC -->|"sensor_msgs/Image"| IMG
-    DEC -->|"geometry_msgs/TransformStamped (static cam&harr;body)"| TF
-    DJI -->|"<msg> velocity"| VEL
-    DJI -->|"<msg> altitude"| ALT
-    DJI -->|"<msg> sat count"| SATS
+    %% --- perception ---
+    DEC -->|"/camera/image_raw<br/>sensor_msgs/Image"| SLAM
 
-    %% --- localisation ---
-    IMG -->|"sensor_msgs/Image"| SLAM
-    VEL -->|"<msg>"| EKF
-    ALT -->|"<msg>"| EKF
-    SLAM -->|"<up-to-scale odom msg>"| EKF
-    EKF -->|"<pose+cov msg>"| POSE
-    EKF -->|"tf2_msgs/TFMessage (map&rarr;odom&rarr;base_link)"| TF
+    %% --- telemetry into EKF (stamped with measurement time) ---
+    DJI -->|"/telemetry/velocity<br/>geometry_msgs/Vector3"| EKF
+    DJI -->|"/telemetry/altitude_agl<br/>std_msgs/Float64"| EKF
 
-    %% --- navigation ---
-    POSE -->|"<pose+cov msg>"| PC
-    GOAL -->|"<goal msg>"| TRAJ
-    TRAJ -->|"<path/setpoints>"| WPF
-    WPF -->|"<current setpoint>"| SETPT
-    SETPT -->|"<setpoint msg>"| PC
-    PC -->|"<velocity/stick msg>"| CMD
+    %% --- localisation internal + output ---
+    SLAM -->|"/vo/odom (no-scale)<br/>nav_msgs/Odometry"| EKF
+    EKF -->|"/localisation/pose<br/>geometry_msgs/PoseWithCovarianceStamped"| PC
 
-    %% --- command back to bridge -> drone ---
-    CMD -->|"<velocity/stick msg>"| DJI
+    %% --- navigation chain ---
+    GOALSRC -->|"/goal<br/>to define!!"| TRAJ
+    TRAJ -->|"/plan/path<br/>nav_msgs/Path"| WPF
+    WPF -->|"/setpoint<br/>geometry_msgs/PoseStamped"| PC
+    PC -->|"command/stick<br/>std_msgs/Float64MultiArray"| DJI
 
     %% --- evaluation (dev-only) ---
-    GT -->|"<pose msg> (domain 0)"| DB
-    DB -->|"<pose msg> (domain 12)"| CMP
-    POSE -->|"<pose+cov msg>"| CMP
+    EKF -->|"/localisation/pose<br/>geometry_msgs/PoseWithCovarianceStamped"| CMP
+    DB -->|"/rigid_bodies/dji_mini4 (domain 12)<br/>geometry_msgs/PoseStamped"| CMP
+
+    %% --- tf publications (broadcast bus) ---
+    DEC -->|"/tf_static (cam&harr;body)<br/>geometry_msgs/TransformStamped"| TF
+    EKF -->|"/tf (map&rarr;odom&rarr;base_link)<br/>tf2_msgs/TFMessage"| TF
+
+    %% /telemetry/satellite_count if switches indoor and outdoor
 
     style BRIDGE fill:#efe,stroke:#474,color:#222
     style LOC fill:#eef,stroke:#447,color:#222
     style NAV fill:#fef,stroke:#747,color:#222
     style EVAL fill:#ffe,stroke:#774,color:#222,stroke-dasharray:4 3
+    style GOALSRC fill:#f7f7f7,stroke:#999,color:#222,stroke-dasharray:4 3
+    style TF fill:#fff,stroke:#333,color:#222
