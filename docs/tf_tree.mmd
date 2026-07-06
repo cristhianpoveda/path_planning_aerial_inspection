@@ -1,0 +1,27 @@
+---
+config:
+  layout: elk
+---
+
+flowchart TD
+
+    MAP["map<br/><i>localisation ref frame</i>"]
+    ODOM["odom<br/><i>continuous</i>"]
+    BASE["base_link<br/><i>drone body</i>"]
+    CAM["camera_link<br/><i>camera mount</i>"]
+    CAMOPT["camera_optical_frame<br/><i>optical convention (z-fwd)</i>"]
+
+    %% dynamic transforms (localisation)
+    MAP -->|"EKF<br/>map&rarr;odom (global drift correction) to define!!"| ODOM
+    ODOM -->|"EKF<br/>odom&rarr;base_link (pose estimate)"| BASE
+
+    %% static transforms
+    BASE -.->|"camera_decoder — STATIC<br/>base_link&rarr;camera_link (extrinsic calib)"| CAM
+    CAM -.->|"camera_decoder — STATIC<br/>camera_link&rarr;camera_optical_frame"| CAMOPT
+
+    %% EVALUATION
+    MOCAP["optitrack_map<br/><i>OptiTrack frame</i>"]
+    MOCAP -.->|"comparison_node — STATIC<br/>optitrack_map&harr;map (manual alignment)"| MAP
+
+    style MAP fill:#eef,stroke:#447,color:#222
+    style MOCAP fill:#ffe,stroke:#774,color:#222,stroke-dasharray:4 3
