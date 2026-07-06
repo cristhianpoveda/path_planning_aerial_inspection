@@ -30,10 +30,6 @@ ros2_ws/
         submodules/
           dji_interface.py
         controller.py
-      launch/
-        bridge.launch.py
-      config/
-        camera_decoder/params.yaml
       package.xml
       setup.py
 
@@ -43,7 +39,7 @@ ros2_ws/
       launch/
         camera_streamer.launch.py
       config/
-        camera_streamer.launch.py
+        camera_streamer.yaml
       package.xml
       setup.py
       
