@@ -19,7 +19,7 @@ sequenceDiagram
     SLAM->>SLAM: Track features, no-scale motion estimation
     SLAM->>EKF: Odometry (NO scale)
 
-    par telemetry 20 Hz
+    par telemetry 20 Hz (async)
         DJI->>EKF: Velocity
         DJI->>EKF: Altitude_agl
     end
