@@ -9,3 +9,7 @@ ros2 topic pub /drone_1/trigger_shape std_msgs/String "{data: 'cube'}" -1
 # open android studio
 
 /opt/android-studio/bin/studio.sh
+
+ffplay -fflags nobuffer -flags low_delay -framedrop \
+  -analyzeduration 0 -probesize 32 \
+  -i tcp://192.168.50.18:8900
