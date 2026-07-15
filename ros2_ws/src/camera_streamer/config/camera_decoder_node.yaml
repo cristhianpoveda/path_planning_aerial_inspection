@@ -1,0 +1,24 @@
+# Params for camera_decoder_node. Use '/**:' to
+# apply regardless of namespace/remapping.
+/drone_1/camera_decoder_node:
+  ros__parameters:
+    # connection
+    host: "192.168.50.18"
+    port: 8900
+    reconnect_backoff_s: 2.0
+
+    # ffmpeg / PyAV open options
+    fflags: "nobuffer"
+    flags: "low_delay"
+    analyzeduration: 0
+    probesize: 32          # bytes; raise if connect fails to find the stream
+
+    # frames
+    base_frame: "base_link"
+    gimbal_base_frame: "gimbal_base"
+    camera_frame: "camera_link"
+    optical_frame: "camera_optical_frame"
+
+    # base_link -> gimbal_base
+    mount_translation: [0.105, 0.0, -0.025]     # x, y, z  [m]
+    mount_rotation_rpy: [0.0, 0.0, 0.0]    # roll, pitch, yaw  [rad]

@@ -11,7 +11,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Empty, String, Float64MultiArray, Float64, Int32, Bool
 from sensor_msgs.msg import NavSatFix
-from geometry_msgs.msg import Vector3
+from geometry_msgs.msg import Vector3Stamped
 from datetime import datetime
 from requests.exceptions import RequestException
 import socket  # Added for UDP
@@ -20,7 +20,33 @@ import json
 from dji_controller.submodules.dji_interface import *
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import numpy as np
+from collections import deque
+from rclpy.time import Time
+from drone_interfaces.msg import AltitudeAglStamped
 
+class ClockOffsetTracker:
+    """Maps Wildbridge monotonic clock onto the ROS clock."""
+
+    def __init__(self, window_ns: int = 5_000_000_000):   # 5 s window
+        self._window_ns = window_ns
+        self._samples = deque()          # (t_local_ns, r_ns), ordered by t_local
+        self._last_phone_ns = None
+
+    def to_ros_ns(self, phone_clock_ns: int, laptop_clock_ns: int) -> int:
+        # Remote clock reset -> monotonic time drops -> forget history.
+        if self._last_phone_ns is not None and phone_clock_ns < self._last_phone_ns:
+            self._samples.clear()
+        self._last_phone_ns = phone_clock_ns
+
+        r = laptop_clock_ns - phone_clock_ns
+        self._samples.append((laptop_clock_ns, r))
+
+        cutoff = laptop_clock_ns - self._window_ns
+        while self._samples and self._samples[0][0] < cutoff:
+            self._samples.popleft()
+
+        offset_ns = min(r for _, r in self._samples)   # delay floor ~= O
+        return phone_clock_ns + offset_ns
 
 class DjiNode(Node):
     def __init__(self):
@@ -36,11 +62,11 @@ class DjiNode(Node):
         self.dji_interface = DJIInterface(self.ip_rc)
 
         # Verify the connection to the drone
-        if not self.verify_connection():
+        self.connected = self.verify_connection()
+        if not self.connected:
             self.get_logger().error(
                 f"Unable to connect to the drone at IP: {self.ip_rc}. Shutting down node.")
             self.get_logger().info("Connection Failure")
-            rclpy.shutdown()  # Shut down ROS
             return
         
         # UDP initialisation
@@ -97,10 +123,14 @@ class DjiNode(Node):
             Empty, 'command/camera/start_recording', self.start_recording_callback, 10)
         self.create_subscription(
             Empty, 'command/camera/stop_recording', self.stop_recording_callback, 10)
+        
+        self._clock_offset = ClockOffsetTracker()   # shared: speed and altitude
+        self._last_vel_tphone = 0
+        self._last_alt_tphone = 0
 
         # Publishers for telemetry
         self.speed_pub = self.create_publisher(Float64, 'speed', 10)
-        self.speed_vector_pub = self.create_publisher(Vector3, 'speed_vector', 10)
+        self.speed_vector_pub = self.create_publisher(Vector3Stamped, 'speed_vector', 10)
         self.heading_pub = self.create_publisher(Float64, 'heading', 10)
         self.attitude_pub = self.create_publisher(String, 'attitude', 10)
         self.location_pub = self.create_publisher(NavSatFix, 'location', 10)
@@ -160,6 +190,10 @@ class DjiNode(Node):
         # Camera Publisher
         self.camera_is_recording_pub = self.create_publisher(
             Bool, 'camera/is_recording', 10)
+        
+        # Altitude Agl
+        self.altitude_agl_pub = self.create_publisher(
+            AltitudeAglStamped, 'altitude_agl', 10)
 
         # Timer to publish telemetry at regular intervals
         # Publish every 1/20 second (50ms)
@@ -167,6 +201,10 @@ class DjiNode(Node):
 
         self.get_logger().info(
             f"DroneNode initialized and connected to IP: {self.ip_rc}")
+
+    def _ros_stamp(self, stamp_phone_ns: int, laptop_read_time_ns: int):
+        ros_ns = self._clock_offset.to_ros_ns(int(stamp_phone_ns), int(laptop_read_time_ns))
+        return Time(nanoseconds=ros_ns).to_msg()
 
     ##############################
     # Connection Verification    #
@@ -382,6 +420,9 @@ class DjiNode(Node):
 
     def publish_states(self):
         try:
+            # current time
+            read_time = self.get_clock().now().nanoseconds
+
             # Get telemetry from TCP socket stream
             telemetry = self.dji_interface.getTelemetry()
             
@@ -389,14 +430,22 @@ class DjiNode(Node):
                 return  # No telemetry data available yet
             
             # Speed (scalar and vector)
-            speed_data = telemetry.get('speed', {})
-            speed_x = float(speed_data.get('x', 0.0))
-            speed_y = float(speed_data.get('y', 0.0))
-            speed_z = float(speed_data.get('z', 0.0))
-            speed = np.sqrt(speed_x**2 + speed_y**2 + speed_z**2)
             
-            self.speed_pub.publish(Float64(data=speed))
-            self.speed_vector_pub.publish(Vector3(x=speed_x, y=speed_y, z=speed_z))
+            vel_tphone = telemetry.get('velTMonoNs', 0)
+            if vel_tphone and vel_tphone != self._last_vel_tphone:
+                self._last_vel_tphone = vel_tphone
+                speed_data = telemetry.get('speed', {})
+                msg = Vector3Stamped()
+                msg.header.stamp = self._ros_stamp(vel_tphone, read_time)
+                msg.header.frame_id = ''   # TODO: DJI KeyAircraftVelocity is NED ground frame, not body
+                msg.vector.x = float(speed_data.get('x', 0.0))
+                msg.vector.y = float(speed_data.get('y', 0.0))
+                msg.vector.z = float(speed_data.get('z', 0.0))
+                self.speed_vector_pub.publish(msg)
+                #self.get_logger().info(f"vel x={msg.vector.x:.3f} y={msg.vector.y:.3f} z={msg.vector.z:.3f} tphone={vel_tphone}")
+
+                speed = np.sqrt(msg.vector.x**2 + msg.vector.y**2 + msg.vector.z**2)
+                self.speed_pub.publish(Float64(data=speed))
             
             # Heading
             self.heading_pub.publish(Float64(data=float(telemetry.get('heading', 0.0))))
@@ -476,6 +525,17 @@ class DjiNode(Node):
             # Camera recording status
             self.camera_is_recording_pub.publish(
                 Bool(data=telemetry.get('isRecording', False)))
+            
+            # Altitude AGL
+            alt_tphone = telemetry.get('altAglTMonoNs', 0)
+            alt_val = telemetry.get('altitudeAgl')
+            if alt_tphone and alt_val is not None and alt_tphone != self._last_alt_tphone:
+                self._last_alt_tphone = alt_tphone
+                msg = AltitudeAglStamped()
+                msg.header.stamp = self._ros_stamp(alt_tphone, read_time)
+                msg.altitude = float(alt_val)
+                self.altitude_agl_pub.publish(msg)
+                # self.get_logger().info(f"agl={float(alt_val):.3f} tphone={alt_tphone}")
 
         except Exception as e:
             self.get_logger().error(f"Error while publishing states: {e}")
@@ -484,9 +544,12 @@ class DjiNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = DjiNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        if node.connected:
+            rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

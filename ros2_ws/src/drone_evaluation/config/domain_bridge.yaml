@@ -1,0 +1,7 @@
+name: optitrack_bridge
+
+topics:
+  /optitrack/rigid_bodies/dji_mini4:
+    type: geometry_msgs/msg/PoseStamped
+    from_domain: 0
+    to_domain: 12

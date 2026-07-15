@@ -1,0 +1,2 @@
+# Shared parameters (skeleton). Node-specific params live in each package's
+# config/<node>/params.yaml; cross-cutting defaults can go here.
