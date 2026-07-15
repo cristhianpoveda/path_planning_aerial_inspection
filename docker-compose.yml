@@ -1,28 +1,20 @@
 name: drone-autonomy
 
-# bridge       - DJI -> ROS (WildBridge + adapters + H.264 decode)
-# localization - ORB-SLAM3 (L3/L4) + robot_localization dual-EKF
-#     make up
-#     make shell-bridge
-#     make shell-loc
-
 x-ros-env: &ros-env
   ROS_DOMAIN_ID: "12"
-  RMW_IMPLEMENTATION: rmw_fastrtps_cpp     # identical in both containers
+  RMW_IMPLEMENTATION: rmw_fastrtps_cpp
   ROS_LOCALHOST_ONLY: "0"
 
 x-build-args: &build-args
   USERNAME: ros
   USER_UID: "${UID:-1000}"
   USER_GID: "${GID:-1000}"
-  DISPLAY: "${DISPLAY}"
-  QT_X11_NO_MITSHM: "1"
 
 services:
   bridge:
     build:
       context: .
-      dockerfile: docker/bridge.Dockerfile
+      dockerfile: docker/bridge/bridge.Dockerfile
       args: *build-args
     network_mode: host
     ipc: host
@@ -30,15 +22,14 @@ services:
     volumes:
       - ./ros2_ws:/ros2_ws:rw
       - ./config:/config:ro
-      
     command: ["bash"]
     stdin_open: true
     tty: true
 
-  localization:
+  localisation:
     build:
       context: .
-      dockerfile: docker/localization.Dockerfile
+      dockerfile: docker/localisation/localisation.Dockerfile
       args: *build-args
     network_mode: host
     ipc: host
@@ -46,26 +37,38 @@ services:
     volumes:
       - ./ros2_ws:/ros2_ws:rw
       - ./config:/config:ro
-      - maps:/maps:rw               # persists Atlas: L3 writes -> L4 reads
-      - ./bags:/bags:rw
-      - /tmp/.X11-unix:/tmp/.X11-unix:ro
-    depends_on:
-      - bridge
-      
+      - ./slam_data:/slam_data:rw
     command: ["bash"]
     stdin_open: true
     tty: true
 
-  # Optional rviz:  docker compose --profile viz up viz
-  viz:
-    extends: localization
-    profiles: ["viz"]
-    environment:
-      <<: *ros-env
-      DISPLAY: "${DISPLAY}"
+  navigation:
+    build:
+      context: .
+      dockerfile: docker/navigation/navigation.Dockerfile
+      args: *build-args
+    network_mode: host
+    ipc: host
+    environment: *ros-env
     volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-    command: ["rviz2"]
+      - ./ros2_ws:/ros2_ws:rw
+      - ./config:/config:ro
+    command: ["bash"]
+    stdin_open: true
+    tty: true
 
-volumes:
-  maps:
+  evaluation:
+    build:
+      context: .
+      dockerfile: docker/evaluation/evaluation.Dockerfile
+      args: *build-args
+    network_mode: host
+    ipc: host
+    environment: *ros-env
+    volumes:
+      - ./ros2_ws:/ros2_ws:rw
+      - ./config:/config:ro
+      - ./eval_logs:/eval_logs:rw
+    command: ["bash"]
+    stdin_open: true
+    tty: true
