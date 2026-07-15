@@ -25,7 +25,7 @@ flowchart TB
             EVALd["build: docker/evaluation.Dockerfile<br/>nodes: comparison_node, ros_domains_bridge<br/>volumes: ./eval_logs:/eval_logs:rw<br/>env: sys_ROS_DOMAIN_ID + 0 (OptiTrack)<br/>lifecycle: dev-only"]
         end
  subgraph LAPTOP["Ground Station — Docker host"]
-        LMETA["OS: Ubuntu 22.04; · IP on LAN: 192.168.50.129<br>Docker: compose project: drone-autonomy · network: host · ipc: host<br>DDS: CycloneDDS · ROS_DOMAIN_ID: 12"]
+        LMETA["OS: Ubuntu 22.04; · IP on LAN: 192.168.50.129<br>Docker: compose project: drone-autonomy · network: host · ipc: host<br>DDS: FastDDS · ROS_DOMAIN_ID: 12"]
         BRIDGE
         LOCALISATION
         NAVIGATION

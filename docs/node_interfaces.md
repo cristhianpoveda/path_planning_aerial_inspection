@@ -14,8 +14,8 @@ Job: bidirectional bridge between the modified WildBridge and ROS over TCP/UDP.
 
 | Direction | Topic | Type | Notes |
 |-----------|-------|------|-------|
-| pub | `telemetry/velocity` | `geometry_msgs/Vector3` | stamp with measurement time |
-| pub | `telemetry/altitude_agl` | `std_msgs/Float64` | AGL, from KeyAltitude |
+| pub | `speed_vector` | `geometry_msgs/Vector3` | stamp with measurement time |
+| pub | `altitude_agl` | `std_msgs/Float64` | AGL, from KeyAltitude |
 | sub | `command/stick` | `std_msgs/Float64MultiArray` | [lx, ly, rx, ry] |
 
 Params: `phone_IP: 192.168.50.18`, `tcp_port: 8081`, `udp_port: 8082`, `http_port: 8080`,
@@ -117,7 +117,7 @@ Job: compare localisation estimate vs ground truth, compute + log ATE/RPE.
 | Direction | Topic | Type | Notes |
 |-----------|-------|------|-------|
 | sub | `localisation/pose` | `geometry_msgs/PoseWithCovarianceStamped` | our estimate |
-| sub | `/rigid_bodies/dji_mini4` (domain 12) | `geometry_msgs/PoseStamped` | ground truth |
+| sub | `/optitrack/rigid_bodies/dji_mini4` (domain 12) | `geometry_msgs/PoseStamped` | ground truth |
 | pub | `eval/metrics` | `TBD` | ATE/RPE |
 
 Params: `log path: evaluation/eval_logs`.

@@ -3,7 +3,7 @@ config:
   layout: elk
 ---
 
-flowchart LR
+flowchart TB
 
     %% DEFINE GOAL SOURCE
     GOALSRC["Goal source"]
@@ -40,11 +40,11 @@ flowchart LR
     DEC -->|"camera/image_raw<br/>sensor_msgs/Image"| SLAM
 
     %% --- telemetry into EKF (stamped with measurement time) ---
-    DJI -->|"telemetry/velocity<br/>geometry_msgs/Vector3"| EKF
-    DJI -->|"telemetry/altitude_agl<br/>std_msgs/Float64"| EKF
+    DJI -->|"speed_vector<br/>geometry_msgs/Vector3<br/>no msg duplication"| EKF
+    DJI -->|"altitude_agl<br/>std_msgs/Float64<br/>no msg duplication"| EKF
 
     %% --- localisation internal + output ---
-    SLAM -->|"vo/odom (no-scale)<br/>nav_msgs/Odometry"| EKF
+    SLAM -->|"vo/pose (no-scale)<br/>geometry_msgs/PoseWithCovarianceStamped"| EKF
     EKF -->|"localisation/pose<br/>geometry_msgs/PoseWithCovarianceStamped"| PC
 
     %% --- navigation chain ---
@@ -55,7 +55,7 @@ flowchart LR
 
     %% --- evaluation (dev-only) ---
     EKF -->|"localisation/pose<br/>geometry_msgs/PoseWithCovarianceStamped"| CMP
-    DB -->|"/rigid_bodies/dji_mini4 (domain 12)<br/>geometry_msgs/PoseStamped"| CMP
+    DB -->|"/optitrack/rigid_bodies/dji_mini4 (domain 12)<br/>geometry_msgs/PoseStamped"| CMP
 
     %% --- tf publications (broadcast bus) ---
     DEC -->|"/tf_static (cam&harr;body)<br/>geometry_msgs/TransformStamped"| TF
