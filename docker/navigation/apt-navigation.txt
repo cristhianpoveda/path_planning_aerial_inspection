@@ -1,0 +1,3 @@
+# apt packages for the navigation service.
+sudo
+python3-pip

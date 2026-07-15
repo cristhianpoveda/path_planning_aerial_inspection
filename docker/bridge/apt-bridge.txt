@@ -1,0 +1,5 @@
+# apt packages for the bridge service.
+sudo
+python3-pip
+ros-humble-cv-bridge
+python3-opencv

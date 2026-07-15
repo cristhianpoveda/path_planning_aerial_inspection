@@ -1,4 +1,0 @@
-# Pinned Python deps for the bridge container.
-# numpy comes from apt (python3-numpy) to stay ABI-compatible with cv_bridge — do NOT pip it here.
-requests==2.32.3
-av==12.3.0

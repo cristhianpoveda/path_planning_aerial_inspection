@@ -1,0 +1,4 @@
+# apt packages for the evaluation service.
+sudo
+python3-pip
+ros-humble-domain-bridge

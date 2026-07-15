@@ -1,0 +1,29 @@
+# Build toolchain
+sudo
+python3-pip
+build-essential
+cmake
+git
+pkg-config
+
+# ORB-SLAM3 core deps
+libeigen3-dev
+libopencv-dev
+libboost-all-dev
+libssl-dev
+
+# Pangolin deps (viewer)
+libgl1-mesa-dev
+libglew-dev
+libpython3-dev
+libegl1-mesa-dev
+libwayland-dev
+libxkbcommon-dev
+wayland-protocols
+
+# ROS
+ros-humble-cv-bridge
+ros-humble-image-transport
+ros-humble-message-filters
+ros-humble-tf2-ros
+ros-humble-tf2-geometry-msgs
