@@ -18,3 +18,5 @@ rosbag2_*/
 .vscode/
 .idea/
 EOF
+
+*.pdf
