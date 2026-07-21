@@ -32,6 +32,13 @@ ENV ORB_SLAM3_ROOT_DIR=/opt/ORB_SLAM3
 
 RUN cd /opt/ORB_SLAM3/Vocabulary && tar -xzf ORBvoc.txt.tar.gz
 
+RUN printf '%s\n' \
+      /opt/ORB_SLAM3/lib \
+      /opt/ORB_SLAM3/Thirdparty/DBoW2/lib \
+      /opt/ORB_SLAM3/Thirdparty/g2o/lib \
+      > /etc/ld.so.conf.d/orbslam3.conf \
+    && ldconfig
+
 # --- pip deps
 COPY docker/localisation/requirements-localisation.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt

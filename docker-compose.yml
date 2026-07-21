@@ -33,11 +33,15 @@ services:
       args: *build-args
     network_mode: host
     ipc: host
-    environment: *ros-env
+    environment: 
+      <<: *ros-env
+      DISPLAY: "${DISPLAY}"
+      QT_X11_NO_MITSHM: "1"
     volumes:
       - ./ros2_ws:/ros2_ws:rw
       - ./config:/config:ro
       - ./slam_data:/slam_data:rw
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
     command: ["bash"]
     stdin_open: true
     tty: true
