@@ -1,32 +1,28 @@
 %YAML:1.0
 
-#--------------------------------------------------------------------------------------------
-# Camera Parameters. Adjust them!
-#--------------------------------------------------------------------------------------------
+# Manual focus ~1.5 m and locked exposure
+
 File.version: "1.0"
 
 Camera.type: "PinHole"
 
-# Intrinsics — FROM YOUR CALIBRATION, at the resolution you actually stream
-Camera1.fx: 500.0
-Camera1.fy: 500.0
-Camera1.cx: 960.0
-Camera1.cy: 540.0
+Camera1.fx: 1431.853213
+Camera1.fy: 1429.501108
+Camera1.cx: 970.571263
+Camera1.cy: 541.273823
 
-# Distortion (plumb_bob / radtan)
-Camera1.k1: 0.0
-Camera1.k2: 0.0
-Camera1.p1: 0.0
-Camera1.p2: 0.0
-Camera1.k3: 0.0
+Camera1.k1: 0.07182632
+Camera1.k2: -0.08371309
+Camera1.p1: -0.00002096
+Camera1.p2: 0.00048117
+Camera1.k3: 0.00000000
 
 Camera.width: 1920
 Camera.height: 1080
 
-# Camera frames per second
 Camera.fps: 24
 
-# Color order (0: BGR, 1: RGB. Ignored if grayscale)
+# 0: BGR, 1: RGB. Ignored if grayscale.
 Camera.RGB: 0
 
 #--------------------------------------------------------------------------------------------
