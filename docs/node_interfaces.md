@@ -14,8 +14,9 @@ Job: bidirectional bridge between the modified WildBridge and ROS over TCP/UDP.
 
 | Direction | Topic | Type | Notes |
 |-----------|-------|------|-------|
-| pub | `speed_vector` | `geometry_msgs/Vector3` | stamp with measurement time |
-| pub | `altitude_agl` | `std_msgs/Float64` | AGL, from KeyAltitude |
+| pub | `speed_vector` | `geometry_msgs/Vector3Stamped` | stamp with measurement time |
+| pub | `relative_altitude` | `std_msgs/Float64` | Height above launch, from KeyAltitude |
+| pub | `gimbal_joint_attitude` | `std_msgs/String` | Gimbal joint states {"pitch", "roll", "yaw"} |
 | sub | `command/stick` | `std_msgs/Float64MultiArray` | [lx, ly, rx, ry] |
 
 Params: `phone_IP: 192.168.50.18`, `tcp_port: 8081`, `udp_port: 8082`, `http_port: 8080`,
@@ -28,7 +29,8 @@ publish frames; broadcast the static camera extrinsic.
 | Direction | Topic | Type | Notes |
 |-----------|-------|------|-------|
 | pub | `camera/image_raw` | `sensor_msgs/Image` | decoded frame |
-| pub | `/tf_static` | `geometry_msgs/TransformStamped` | base_link->camera_link->optical (STATIC) |
+| pub | `/tf_static` | `geometry_msgs/TransformStamped` | base->gimbal->camera->optical |
+| sub | `gimbal_joint_attitude` | `std_msgs/String` | Gimbal joint states {"pitch", "roll", "yaw"} |
 
 Params: `camera_tcp_port: 8900`, `frame_ids: camera_link, camera_optical_frame`.
 
@@ -44,7 +46,7 @@ Job: monocular visual odometry with scale ambiguity.
 | sub | `camera/image_raw` | `sensor_msgs/Image` | |
 | pub | `vo/odom` | `nav_msgs/Odometry` | no metric scale |
 
-Params: `vocabulary: <vocabulary>`, `camera calibration: <calibration>`, `feature settings: <settings>`, `devices: GPU`.
+Params: `vocabulary: ORBvoc`, `camera calibration: config/camera_calibration.yaml`, `feature settings: <settings>`, `devices: CPU`.
 
 ### localisation ekf_node
 Job: fuse V-SLAM with metric velocity + AGL altitude to resolves scale,
