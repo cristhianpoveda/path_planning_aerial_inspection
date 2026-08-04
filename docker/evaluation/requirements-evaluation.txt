@@ -1,1 +1,3 @@
 # Python (pip) packages for the evaluation service.
+matplotlib
+rosbags
