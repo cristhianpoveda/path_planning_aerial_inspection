@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import numpy as np
 from collections import deque
 from rclpy.time import Time
-from drone_interfaces.msg import AltitudeAglStamped
+from drone_interfaces.msg import RelativeAltitudeStamped
 
 class ClockOffsetTracker:
     """Maps Wildbridge monotonic clock onto the ROS clock."""
@@ -191,9 +191,9 @@ class DjiNode(Node):
         self.camera_is_recording_pub = self.create_publisher(
             Bool, 'camera/is_recording', 10)
         
-        # Altitude Agl
-        self.altitude_agl_pub = self.create_publisher(
-            AltitudeAglStamped, 'altitude_agl', 10)
+        # Relative altitude
+        self.relative_altitude_pub = self.create_publisher(
+            RelativeAltitudeStamped, 'relative_altitude', 10)
 
         # Timer to publish telemetry at regular intervals
         # Publish every 1/20 second (50ms)
@@ -526,15 +526,15 @@ class DjiNode(Node):
             self.camera_is_recording_pub.publish(
                 Bool(data=telemetry.get('isRecording', False)))
             
-            # Altitude AGL
-            alt_tphone = telemetry.get('altAglTMonoNs', 0)
+            # Relative altitude
+            alt_tphone = telemetry.get('altAglTMonoNs', 0) # Relative to launch not AGL!!
             alt_val = telemetry.get('altitudeAgl')
             if alt_tphone and alt_val is not None and alt_tphone != self._last_alt_tphone:
                 self._last_alt_tphone = alt_tphone
-                msg = AltitudeAglStamped()
+                msg = RelativeAltitudeStamped()
                 msg.header.stamp = self._ros_stamp(alt_tphone, read_time)
                 msg.altitude = float(alt_val)
-                self.altitude_agl_pub.publish(msg)
+                self.relative_altitude_pub.publish(msg)
                 # self.get_logger().info(f"agl={float(alt_val):.3f} tphone={alt_tphone}")
 
         except Exception as e:
