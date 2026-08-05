@@ -21,3 +21,5 @@ EOF
 
 *.pdf
 *.png
+TODO
+*.jsonl
