@@ -22,21 +22,29 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import numpy as np
 from collections import deque
 from rclpy.time import Time
-from drone_interfaces.msg import RelativeAltitudeStamped
+from drone_interfaces.msg import RelativeAltitudeStamped, AttitudeStamped
 
 class ClockOffsetTracker:
     """Maps Wildbridge monotonic clock onto the ROS clock."""
 
-    def __init__(self, window_ns: int = 5_000_000_000):   # 5 s window
+    def __init__(self, window_ns: int = 5_000_000_000, min_samples: int = 40):
         self._window_ns = window_ns
+        self._min_samples = min_samples
         self._samples = deque()          # (t_local_ns, r_ns), ordered by t_local
-        self._last_phone_ns = None
+        self._last_phone_ns = {}
+        self._last_out = {}              # per-topic monotonicity
 
-    def to_ros_ns(self, phone_clock_ns: int, laptop_clock_ns: int) -> int:
+    def is_warm(self) -> bool:
+        return len(self._samples) >= self._min_samples
+
+    def to_ros_ns(self, phone_clock_ns: int, laptop_clock_ns: int, key: str) -> int:
         # Remote clock reset -> monotonic time drops -> forget history.
-        if self._last_phone_ns is not None and phone_clock_ns < self._last_phone_ns:
+        prev_phone = self._last_phone_ns.get(key)
+        if prev_phone is not None and phone_clock_ns < prev_phone:
             self._samples.clear()
-        self._last_phone_ns = phone_clock_ns
+            self._last_out.clear()
+            self._last_phone_ns.clear()
+        self._last_phone_ns[key] = phone_clock_ns
 
         r = laptop_clock_ns - phone_clock_ns
         self._samples.append((laptop_clock_ns, r))
@@ -46,7 +54,15 @@ class ClockOffsetTracker:
             self._samples.popleft()
 
         offset_ns = min(r for _, r in self._samples)   # delay floor ~= O
-        return phone_clock_ns + offset_ns
+        out_ns = phone_clock_ns + offset_ns
+
+        # The offset steps up when the window minimum ages out; never let a
+        # later message on the same topic carry an earlier stamp.
+        prev = self._last_out.get(key)
+        if prev is not None and out_ns <= prev:
+            out_ns = prev + 1
+        self._last_out[key] = out_ns
+        return out_ns
 
 class DjiNode(Node):
     def __init__(self):
@@ -124,20 +140,23 @@ class DjiNode(Node):
         self.create_subscription(
             Empty, 'command/camera/stop_recording', self.stop_recording_callback, 10)
         
-        self._clock_offset = ClockOffsetTracker()   # shared: speed and altitude
-        self._last_vel_tphone = 0
-        self._last_alt_tphone = 0
+        self._clock_offset = ClockOffsetTracker()   # shared: phone monotonic clock
+        self._last_pkt_tphone = None       # flight-controller packet (~10 Hz)
+        self._last_gimbal_tphone = None    # gimbal packet (~17.5 Hz)
+        self._last_rx_time = None
+        self._pkt_period_ns = int(1e9 / 10.0)
+        self._gimbal_period_ns = int(1e9 / 17.5)
 
         # Publishers for telemetry
         self.speed_pub = self.create_publisher(Float64, 'speed', 10)
         self.speed_vector_pub = self.create_publisher(Vector3Stamped, 'speed_vector', 10)
         self.heading_pub = self.create_publisher(Float64, 'heading', 10)
-        self.attitude_pub = self.create_publisher(String, 'attitude', 10)
+        self.attitude_pub = self.create_publisher(AttitudeStamped, 'attitude', 10)
         self.location_pub = self.create_publisher(NavSatFix, 'location', 10)
         self.gimbal_attitude_pub = self.create_publisher(
             String, 'gimbal_attitude', 10)
         self.gimbal_joint_attitude_pub = self.create_publisher(
-            String, 'gimbal_joint_attitude', 10)
+            AttitudeStamped, 'gimbal_joint_attitude', 10)
         self.zoom_fl_pub = self.create_publisher(Float64, 'zoom_fl', 10)
         self.hybrid_fl_pub = self.create_publisher(Float64, 'hybrid_fl', 10)
         self.optical_fl_pub = self.create_publisher(Float64, 'optical_fl', 10)
@@ -202,8 +221,9 @@ class DjiNode(Node):
         self.get_logger().info(
             f"DroneNode initialized and connected to IP: {self.ip_rc}")
 
-    def _ros_stamp(self, stamp_phone_ns: int, laptop_read_time_ns: int):
-        ros_ns = self._clock_offset.to_ros_ns(int(stamp_phone_ns), int(laptop_read_time_ns))
+    def _ros_stamp(self, stamp_phone_ns: int, laptop_read_time_ns: int, key: str):
+        ros_ns = self._clock_offset.to_ros_ns(
+            int(stamp_phone_ns), int(laptop_read_time_ns), key)
         return Time(nanoseconds=ros_ns).to_msg()
 
     ##############################
@@ -420,29 +440,57 @@ class DjiNode(Node):
 
     def publish_states(self):
         try:
-            # current time
-            read_time = self.get_clock().now().nanoseconds
-
             # Get telemetry from TCP socket stream
             telemetry = self.dji_interface.getTelemetry()
-            
+            read_time = self.get_clock().now().nanoseconds   # AFTER the read
+
             if not telemetry:
                 return  # No telemetry data available yet
+
+            # Transport health: packets arriving at all, regardless of content.
+            if self._last_rx_time is not None:
+                rx_gap = read_time - self._last_rx_time
+                if rx_gap > 500_000_000:      # 500 ms
+                    self.get_logger().warn(
+                        f"telemetry transport gap: {rx_gap / 1e6:.0f} ms")
+            self._last_rx_time = read_time
+
+            stamps_valid = self._clock_offset.is_warm()
+
+            # --- flight-controller packet: speed, attitude, relativeAltitude ---
+            pkt_tphone = telemetry.get('pktTMonoNs', 0)
+            pkt_fresh = bool(pkt_tphone) and pkt_tphone != self._last_pkt_tphone
+            pkt_stamp = None
+            if pkt_fresh:
+                if self._last_pkt_tphone is not None:
+                    gap = pkt_tphone - self._last_pkt_tphone
+                    if gap > 2.5 * self._pkt_period_ns:
+                        self.get_logger().warn(f"FC telemetry gap: {gap / 1e6:.0f} ms")
+                self._last_pkt_tphone = pkt_tphone
+                pkt_stamp = self._ros_stamp(pkt_tphone, read_time, 'pkt')
+
+            # --- gimbal packet ---
+            gim_tphone = telemetry.get('gimbalTMonoNs', 0)
+            gim_fresh = bool(gim_tphone) and gim_tphone != self._last_gimbal_tphone
+            gim_stamp = None
+            if gim_fresh:
+                if self._last_gimbal_tphone is not None:
+                    gap = gim_tphone - self._last_gimbal_tphone
+                    if gap > 2.5 * self._gimbal_period_ns:
+                        self.get_logger().warn(f"gimbal telemetry gap: {gap / 1e6:.0f} ms")
+                self._last_gimbal_tphone = gim_tphone
+                gim_stamp = self._ros_stamp(gim_tphone, read_time, 'gimbal')
             
             # Speed (scalar and vector)
-            
-            vel_tphone = telemetry.get('velTMonoNs', 0)
-            if vel_tphone and vel_tphone != self._last_vel_tphone:
-                self._last_vel_tphone = vel_tphone
+            if pkt_fresh and stamps_valid:
                 speed_data = telemetry.get('speed', {})
                 msg = Vector3Stamped()
-                msg.header.stamp = self._ros_stamp(vel_tphone, read_time)
-                msg.header.frame_id = ''   # TODO: DJI KeyAircraftVelocity is NED ground frame, not body
+                msg.header.stamp = pkt_stamp
+                msg.header.frame_id = 'dji_ned'
                 msg.vector.x = float(speed_data.get('x', 0.0))
                 msg.vector.y = float(speed_data.get('y', 0.0))
                 msg.vector.z = float(speed_data.get('z', 0.0))
                 self.speed_vector_pub.publish(msg)
-                #self.get_logger().info(f"vel x={msg.vector.x:.3f} y={msg.vector.y:.3f} z={msg.vector.z:.3f} tphone={vel_tphone}")
 
                 speed = np.sqrt(msg.vector.x**2 + msg.vector.y**2 + msg.vector.z**2)
                 self.speed_pub.publish(Float64(data=speed))
@@ -451,7 +499,14 @@ class DjiNode(Node):
             self.heading_pub.publish(Float64(data=float(telemetry.get('heading', 0.0))))
             
             # Attitude
-            self.attitude_pub.publish(String(data=str(telemetry.get('attitude', {}))))
+            if pkt_fresh and stamps_valid:
+                att = telemetry.get('attitude', {})
+                msg = AttitudeStamped()
+                msg.header.stamp = pkt_stamp
+                msg.roll = float(att.get('roll', 0.0))
+                msg.pitch = float(att.get('pitch', 0.0))
+                msg.yaw = float(att.get('yaw', 0.0))
+                self.attitude_pub.publish(msg)
             
             # Location
             location = telemetry.get('location', {})
@@ -464,8 +519,14 @@ class DjiNode(Node):
             # Gimbal
             gimbal_attitude = telemetry.get('gimbalAttitude', {})
             self.gimbal_attitude_pub.publish(String(data=str(gimbal_attitude)))
-            self.gimbal_joint_attitude_pub.publish(
-                String(data=str(telemetry.get('gimbalJointAttitude', {}))))
+            if gim_fresh and stamps_valid:
+                gj = telemetry.get('gimbalJointAttitude', {})
+                msg = AttitudeStamped()
+                msg.header.stamp = gim_stamp
+                msg.roll = float(gj.get('roll', 0.0))
+                msg.pitch = float(gj.get('pitch', 0.0))
+                msg.yaw = float(gj.get('yaw', 0.0))
+                self.gimbal_joint_attitude_pub.publish(msg)
             self.gimbal_yaw_pub.publish(
                 Float64(data=float(gimbal_attitude.get('yaw', 0.0))))
             self.gimbal_pitch_pub.publish(
@@ -527,15 +588,13 @@ class DjiNode(Node):
                 Bool(data=telemetry.get('isRecording', False)))
             
             # Relative altitude
-            alt_tphone = telemetry.get('altAglTMonoNs', 0) # Relative to launch not AGL!!
-            alt_val = telemetry.get('altitudeAgl')
-            if alt_tphone and alt_val is not None and alt_tphone != self._last_alt_tphone:
-                self._last_alt_tphone = alt_tphone
-                msg = RelativeAltitudeStamped()
-                msg.header.stamp = self._ros_stamp(alt_tphone, read_time)
-                msg.altitude = float(alt_val)
-                self.relative_altitude_pub.publish(msg)
-                # self.get_logger().info(f"agl={float(alt_val):.3f} tphone={alt_tphone}")
+            if pkt_fresh and stamps_valid:
+                alt_val = telemetry.get('relativeAltitude')
+                if alt_val is not None:
+                    msg = RelativeAltitudeStamped()
+                    msg.header.stamp = pkt_stamp
+                    msg.altitude = float(alt_val)
+                    self.relative_altitude_pub.publish(msg)
 
         except Exception as e:
             self.get_logger().error(f"Error while publishing states: {e}")

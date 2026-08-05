@@ -15,6 +15,7 @@ from sensor_msgs.msg import CompressedImage
 import json
 import threading
 from std_msgs.msg import String
+from drone_interfaces.msg import AttitudeStamped
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 import cv2
 
@@ -61,7 +62,7 @@ class CameraDecoderNode(Node):
 
         self.bridge = CvBridge()
         
-        self.pub = self.create_publisher(CompressedImage, "/camera/image/compressed", qos_profile_sensor_data)
+        self.pub = self.create_publisher(CompressedImage, "camera/image/compressed", qos_profile_sensor_data)
 
         # Static (latched): base_link -> gimbal_base, camera_link -> optical.
         self._static_tf = StaticTransformBroadcaster(self)
@@ -69,10 +70,10 @@ class CameraDecoderNode(Node):
 
         # Dynamic: gimbal_base -> camera_link
         self._gimbal_tf = TransformBroadcaster(self)
-        self.create_subscription(String, "gimbal_joint_attitude", self._on_gimbal_joint, 10)
+        self.create_subscription(AttitudeStamped, "gimbal_joint_attitude", self._on_gimbal_joint, 10)
 
         self.get_logger().info(
-            f"camera_decoder_node -> /camera/image/compressed  "
+            f"camera_decoder_node -> camera/image/compressed  "
             f"source tcp://{self.host}:{self.port}  "
             f"frames {self.base_frame}->{self.camera_frame}->{self.optical_frame}"
         )
@@ -133,21 +134,15 @@ class CameraDecoderNode(Node):
 
     def _on_gimbal_joint(self, msg):
         """gimbal_base -> camera_link from live joint angles (degrees in the topic)."""
-        try:
-            j = json.loads(msg.data.replace("'", '"'))
-            pitch_deg = float(j["pitch"])
-            if pitch_deg > 3276.75:
-                pitch_deg -= 6553.5
-            roll = math.radians(float(j["roll"]))
-            pitch = math.radians(-pitch_deg)
-            yaw = math.radians(-float(j["yaw"]))
-        except (ValueError, KeyError) as exc:
-            self.get_logger().warn(f"bad gimbal_joint msg: {exc}")
-            return
+        pitch_deg = msg.pitch
+        if pitch_deg > 3276.75: pitch_deg -= 6553.5
+        roll = math.radians(msg.roll)
+        pitch = math.radians(-pitch_deg)
+        yaw = math.radians(-msg.yaw)
 
         qx, qy, qz, qw = self._quat_from_euler(roll, pitch, yaw)
         t = TransformStamped()
-        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.stamp = msg.header.stamp
         t.header.frame_id = self.gimbal_base_frame
         t.child_frame_id = self.camera_frame
         t.transform.rotation.x = qx
