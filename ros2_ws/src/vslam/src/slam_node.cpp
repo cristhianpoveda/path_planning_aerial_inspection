@@ -12,6 +12,7 @@
 #include <string>
 
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <cv_bridge/cv_bridge.h>
@@ -52,8 +53,9 @@ public:
 
     init_start_ = now();
 
-    pub_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    odometry_pub_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "vo/pose", 10);
+    localisation_state_pub_ = create_publisher<std_msgs::msg::String>("localisation_state", 10);
     sub_ = create_subscription<sensor_msgs::msg::CompressedImage>(
         "/camera/image/compressed", rclcpp::SensorDataQoS(),
         std::bind(&SlamNode::onImage, this, std::placeholders::_1));
@@ -146,11 +148,15 @@ private:
     for (int i = 0; i < 3; ++i) out.pose.covariance[i * 6 + i] = cov_t_;
     for (int i = 3; i < 6; ++i) out.pose.covariance[i * 6 + i] = cov_r_;
 
-    pub_->publish(out);
+    odometry_pub_->publish(out);
+    std_msgs::msg::String state_msg;
+    state_msg.data = state;
+    localisation_state_pub_->publish(state_msg);
   }
 
   std::unique_ptr<ORB_SLAM3::System> slam_;
-  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr odometry_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr localisation_state_pub_;
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr sub_;
   std::string reference_frame_;
   double cov_t_{}, cov_r_{};
