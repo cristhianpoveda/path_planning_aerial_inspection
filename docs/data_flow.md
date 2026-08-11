@@ -19,9 +19,11 @@ sequenceDiagram
     SLAM->>SLAM: Track features, no-scale motion estimation
     SLAM->>EKF: Odometry (NO scale)
 
-    par telemetry 20 Hz (async)
+    par telemetry 10 Hz (same packet, one timestamp)
         DJI->>EKF: Velocity
         DJI->>EKF: Altitude_agl
+        DJI->>EFK: Attitude
+        DJI->>EFK: Gimbal_joint_attitude (19 Hz, separate packe)
     end
 
     EKF->>EKF: Fuse, resolve scale, correct drift
@@ -29,8 +31,7 @@ sequenceDiagram
     Note right of EKF: Publishes estimated pose
 ```
 
-**Timing note:** image and telemetry arrive on different paths with different
-latency. EKF must fuse measurement time instead of arrival time. Measure approximated latency of each!!
+**Timing note:** telemetry carries measurement-time stamps (phone key listener + clock-offset mapping), so its latency is resolved. Camera frames are stamped at decode time minus VIDEO_LATENCY, still to be measured. Fuse in timestamp order.
 
 ---
 
@@ -54,7 +55,7 @@ sequenceDiagram
     Note right of PHONE: watchdog reset<br/>timeout: 200ms -> hover
 ```
 
-**Timing note:** pose age + control compute + UDP transport must be faster than the watchdog timeout. Verify!!
+**Timing note:** pose age at the controller is ~310 ms (video ~200 + SLAM ~40 + gimbal tf ≤53 + filter ~10). This is not compared against the watchdog — the watchdog checks command freshness, not pose age. position_controller runs on a fixed timer and publishes regardless of pose arrival, so the watchdog is satisfied by construction. The 310 ms instead caps position-loop bandwidth at ~0.15 Hz, which is why waypoint_follower needs a conservative max_velocity.
 
 ---
 

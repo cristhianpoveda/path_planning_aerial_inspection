@@ -7,13 +7,13 @@ flowchart TD
 
     MAP["map<br/><i>localisation ref frame</i>"]
     ODOM["odom<br/><i>continuous</i>"]
-    BASE["base_link<br/><i>drone body</i>"]
-    GIMBAL["gimbal_base<br/>p"]
+    BASE["base_link<br/><i>located at the rear of the body on the origin optitrack marker</i>"]
+    GIMBAL["gimbal_base<br/>Gimbal rotation point"]
     CAM["camera_link<br/><i>camera mount</i>"]
     CAMOPT["camera_optical_frame<br/><i>optical convention (z-fwd)</i>"]
 
     %% dynamic transforms (localisation)
-    MAP -->|"EKF<br/>map&rarr;odom (global drift correction) to define!!"| ODOM
+    MAP -->|"EKF<br/>map&rarr;odom (global drift correction) I&isin;R<sup>3<sup/> for now!"| ODOM
     ODOM -->|"EKF<br/>odom&rarr;base_link (pose estimate)"| BASE
     BASE -->|"camera_decoder<br/>relative gimbal attitude"| GIMBAL
 

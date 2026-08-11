@@ -66,10 +66,11 @@ stateDiagram-v2
 
 ## Thresholds and conditions to define
 - Stack healthy: all flight-critical nodes up and pose valid.
-- localisation "degraded": covariance above COV_MAX, or VO tracking lost, or
-  pose jump above JUMP_MAX between updates.
+- localisation "degraded": VO LOST, or VO_DISCONTINUITY, or telemetry transport gap (>500 ms with no packets), or sigma_s > SIGMA_S_MAX. Do NOT gate on pose covariance: p_x, p_y are observed by no update, so
+  P_xx and P_yy grow monotonically and a COV_MAX threshold fires on any sufficiently long healthy flight.
 - recovery timeout: 10 s before forcing Landing.
 - low battery: 15 %.
+- Stack healthy: warm clock offset tracker and aircraft airborne.
 
 ## Cross-references
-- Watchdog hover (200 ms comms loss) enters Hover in 7b and, on the phone side, is what the dead-man switch enforces regardless of stack state.
+- Watchdog hover (300 ms comms loss) enters Hover in 7b and, on the phone side, is what the dead-man switch enforces regardless of stack state.

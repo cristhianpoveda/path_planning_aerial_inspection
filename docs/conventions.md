@@ -42,7 +42,6 @@ ros2_ws/
         camera_streamer.yaml
       package.xml
       setup.py
-      
 
     drone_localisation/     # python pkg
       drone_localisation/
@@ -55,6 +54,17 @@ ros2_ws/
         ekf/params.yaml
       package.xml
       setup.py
+
+    vslam/
+      config/
+        camera_calibration.yaml
+        slam_node.yaml
+      src/
+        slam_node.cpp
+      launch/
+        vslam.launch.py
+      CMakeLists.txt
+      package.xml
 
     drone_navigation/       # python pkg
       drone_navigation/
@@ -80,6 +90,13 @@ ros2_ws/
         domain_bridge.yaml    # ros_domains_bridge config (0 -> 12)
       package.xml
       setup.py
+
+    drone_interfaces/        # python pkg
+      msg/
+        AttitudeStamped.msg
+        RelativeAltitudeStamped.msg
+      CMakeLists.txt
+      package.xml
 
 ```
 
@@ -126,9 +143,3 @@ ros2 launch drone_bringup system.launch.py
 - **Dev default:** `command: ["bash"]` + `stdin_open: true` + `tty: true`.
 - **Eventual per-service default:** the service's launch file, e.g.
   `command: ["ros2", "launch", "drone_localisation", "localisation.launch.py"]`.
-
----
-
-## 7. Custom messages
-
-Not in use.
