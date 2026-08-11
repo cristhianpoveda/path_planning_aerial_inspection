@@ -21,12 +21,12 @@ def generate_launch_description() -> LaunchDescription:
         arguments=[bridge_config],
     )
 
-    comparison_node = Node(
-        package="drone_evaluation",
-        executable="comparison_node",
-        name="comparison_node",
-        namespace=NAMESPACE,
-        output="screen",
-    )
+    # comparison_node = Node(
+    #     package="drone_evaluation",
+    #     executable="comparison_node",
+    #     name="comparison_node",
+    #     namespace=NAMESPACE,
+    #     output="screen",
+    # )
 
-    return LaunchDescription([domain_bridge, comparison_node])
+    return LaunchDescription([domain_bridge])#, comparison_node])
