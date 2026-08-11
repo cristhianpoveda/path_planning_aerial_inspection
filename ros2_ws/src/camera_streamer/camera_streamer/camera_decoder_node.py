@@ -43,6 +43,7 @@ class CameraDecoderNode(Node):
         # base_link -> gimbal_base mount
         self.declare_parameter("mount_translation", [0.105, 0.0, -0.025])    # x, y, z [m]
         self.declare_parameter("mount_rotation_rpy", [0.0, 0.0, 0.0])   # roll, pitch, yaw [rad]
+        self.declare_parameter("pivot_to_lens", [0.02, 0.0, 0.0])   # x, y, z [m]
 
         self.host = self.get_parameter("host").value
         self.port = self.get_parameter("port").get_parameter_value().integer_value
@@ -59,6 +60,7 @@ class CameraDecoderNode(Node):
         self.optical_frame = self.get_parameter("optical_frame").value
         self.mount_translation = self.get_parameter("mount_translation").get_parameter_value().double_array_value
         self.mount_rotation_rpy = self.get_parameter("mount_rotation_rpy").get_parameter_value().double_array_value
+        self.pivot_to_lens = self.get_parameter("pivot_to_lens").get_parameter_value().double_array_value
 
         self.bridge = CvBridge()
         
@@ -145,6 +147,9 @@ class CameraDecoderNode(Node):
         t.header.stamp = msg.header.stamp
         t.header.frame_id = self.gimbal_base_frame
         t.child_frame_id = self.camera_frame
+        t.transform.translation.x = self.pivot_to_lens[0]
+        t.transform.translation.y = self.pivot_to_lens[1]
+        t.transform.translation.z = self.pivot_to_lens[2]
         t.transform.rotation.x = qx
         t.transform.rotation.y = qy
         t.transform.rotation.z = qz
