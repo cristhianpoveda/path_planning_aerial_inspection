@@ -1,7 +1,7 @@
 /drone_1/slam_node:
   ros__parameters:
+    use_sim_time: true
     vocabulary_path: "/opt/ORB_SLAM3/Vocabulary/ORBvoc.txt"
-    reference_frame: "odom"
     use_viewer: false
-    pose_cov_translation: 0.05
-    pose_cov_rotation: 0.05
+    vo_frame: "vo_world"
+    call_shutdown: false
