@@ -1,1 +1,2 @@
 # Python (pip) packages for the localisation service.
+pandas

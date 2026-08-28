@@ -3,7 +3,6 @@ name: drone-autonomy
 x-ros-env: &ros-env
   ROS_DOMAIN_ID: "12"
   RMW_IMPLEMENTATION: rmw_fastrtps_cpp
-  ROS_LOCALHOST_ONLY: "0"
 
 x-build-args: &build-args
   USERNAME: ros
@@ -18,7 +17,9 @@ services:
       args: *build-args
     network_mode: host
     ipc: host
-    environment: *ros-env
+    environment: 
+      <<: *ros-env
+      ROS_LOCALHOST_ONLY: "0"
     volumes:
       - ./ros2_ws:/ros2_ws:rw
       - ./config:/config:ro
@@ -33,8 +34,11 @@ services:
       args: *build-args
     network_mode: host
     ipc: host
+    init: true
+    stop_grace_period: 10s
     environment: 
       <<: *ros-env
+      ROS_LOCALHOST_ONLY: "0"
       DISPLAY: "${DISPLAY}"
       QT_X11_NO_MITSHM: "1"
     volumes:
@@ -53,7 +57,9 @@ services:
       args: *build-args
     network_mode: host
     ipc: host
-    environment: *ros-env
+    environment:
+      <<: *ros-env
+      ROS_LOCALHOST_ONLY: "0"
     volumes:
       - ./ros2_ws:/ros2_ws:rw
       - ./config:/config:ro
@@ -68,7 +74,9 @@ services:
       args: *build-args
     network_mode: host
     ipc: host
-    environment: *ros-env
+    environment:
+      <<: *ros-env
+      ROS_LOCALHOST_ONLY: "0"
     volumes:
       - ./ros2_ws:/ros2_ws:rw
       - ./config:/config:ro
