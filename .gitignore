@@ -23,3 +23,6 @@ EOF
 *.png
 TODO
 *.jsonl
+*.npz
+
+eval_logs/*/
