@@ -6,8 +6,12 @@ that recover metric scale and anchor the navigation frame.
 
 VO appears only in prediction. It is never an update.
 
-> Constants marked **[M]** are measured against OptiTrack (bags of 2026-08-06).
-> Constants marked **[T]** await ORB-SLAM3 and NEES tuning.
+> **[M]** measured against OptiTrack. **[T]** still to determine.
+> **[?]** open question — stated because it matters, not because it is settled.
+>
+> Revision 2026-08-28. Values here are measured on bags F3_01, F3_02, F6, F6c,
+> F8, F9, F9_02 unless noted. Where a figure comes from one bag only, that is
+> stated: several constants proved to be **per-flight**, not universal.
 
 ---
 
@@ -15,38 +19,25 @@ VO appears only in prediction. It is never an update.
 
 | Symbol | Meaning |
 |---|---|
-| `n` | navigation frame — `odom`, origin at takeoff, ENU, **gravity-aligned** |
-| `v` | VO world frame — ORB-SLAM3's arbitrary first-keyframe frame |
-| `b` | `base_link` — **rear of body, coincident with the OptiTrack rigid-body origin** |
+| `n` | navigation frame — `odom`, origin at takeoff, ENU, gravity-aligned |
+| `v` | VO world frame — ORB-SLAM3 first-keyframe frame, published as `vo_world` |
+| `b` | `base_link` — rear of body, coincident with the OptiTrack rigid-body origin |
 | `c` | `camera_optical_frame` |
-| `R_n_v` | VO-frame → nav-frame rotation. **Unknown, slowly drifting — estimated** |
-| `R_v_c(t)` | camera attitude in `v`, from ORB-SLAM3 (~10 Hz) |
-| `R_b_c(t)` | body→camera rotation, from tf (dynamic gimbal, 19 Hz) |
-| `r_l` | `base_link → camera_optical_frame` translation in `b`, metric, **constant** |
-| `r_imu` | `base_link → DJI IMU` translation in `b`, metric, constant |
+| `R_n_v` | VO→nav rotation. Unknown, slowly drifting — estimated |
+| `R_v_c(t)` | camera attitude in `v`, from ORB-SLAM3 |
+| `R_b_c(t)` | body→camera, from the gimbal buffer |
+| `r_l` | `base_link → camera_optical_frame`, metric, constant |
 | `Δp_v` | unscaled VO translation increment, in `v` |
-
-Derived body attitude:
 
 ```
 R_n_b(t) = R_n_v · R_v_c(t) · R_b_c(t)⁻¹
 ```
 
-**`r_l` is constant.** [M] `r_l = [0.117, 0.0, −0.030] m`, `|r_l| = 0.121 m`
-(`base_link → gimbal_base = [0.105, 0, −0.025]` plus
-`gimbal_base → camera_link ≈ [0.012, 0, −0.005]`; `camera_link` and
-`camera_optical_frame` share an origin). The gimbal-fixed component is
-second-order: the gimbal holds camera roll/pitch near-fixed in `n`, so that
-2 cm arm contributes ~1 mm to `Δℓ` versus ~9 mm from the body-fixed part.
+**Error-state convention.** `R_n_v = exp([δθ]ₓ) · R̄_n_v`. After every update:
+`R̄_n_v ← exp([δθ]ₓ)·R̄_n_v`, then `δθ ← 0`. Because `δθ ≡ 0` at every
+linearisation point, the `H` blocks in §5 are exact rather than first-order.
 
-**Error-state convention.** `R_n_v` is carried as a nominal `R̄_n_v` outside the
-filter plus an error rotation `δθ` inside it:
-
-```
-R_n_v = exp([δθ]ₓ) · R̄_n_v
-```
-
-After every update: `R̄_n_v ← exp([δθ]ₓ)·R̄_n_v`, then `δθ ← 0`. `P` is retained.
+**[M] `r_l = [0.117, 0.0, −0.030] m`.**
 
 ---
 
@@ -59,405 +50,569 @@ x = [ p_x, p_y, p_z, s, b, δθ_x, δθ_y, δθ_z ]              (8 states)
 | | |
 |---|---|
 | `p` | body position in `n` (m) |
-| `s` | VO scale factor (unitless), `ṡ = 0` |
-| `b` | altitude sensor bias (m), constant per flight |
+| `s` | VO scale factor, `ṡ = 0` |
+| `b` | altitude sensor bias (m) |
 | `δθ` | nav-frame misalignment (rad), random walk |
 
 No velocity state — velocity is a deterministic function of the VO input and `s`.
-No attitude state — attitude comes from VO at ~10 Hz; only its frame offset is
-estimated.
+No attitude state — attitude comes from VO; only its frame offset is estimated.
 
-> **Why `δθ_x, δθ_y` exist.** ORB-SLAM3's world frame is not gravity-aligned. A
-> tilt of θ leaks horizontal motion into `p_z`: a 5 m traverse at θ = 5° gives
-> 0.44 m of spurious altitude change, ~12σ_alt. The altitude update can only
-> absorb that by biasing `s`, and it is self-consistent, so NEES will not
-> reveal it.
->
-> **Why `δθ_z` exists.** [M] DJI velocity is NED referenced to **magnetic
-> north**, while `odom` is aligned to the room. The two differ by an angle
-> measured at **~120°** in the flight arena — recovered independently from the
-> velocity fit (117°, 119°) and from the attitude comparison (122°, 127°). That
-> angle is unknown at runtime and drifts with the magnetometer. Without it the
-> velocity update biases `s` by `cos ψ`.
+**Why `δθ_x, δθ_y`.** ORB-SLAM3's world frame is not gravity-aligned; a tilt θ
+leaks horizontal motion into `p_z`, which the altitude update can only absorb
+by biasing `s` — self-consistently, so NEES will not reveal it.
+
+**Why `δθ_z`.** [M] DJI velocity NED and DJI attitude yaw use **different yaw
+datums**: the offset measured 51.84° ± 3.81 on F9_02, constant across the
+flight (slope +0.013° per degree of heading). `δθ_z` is what absorbs it.
+
+> **[?] The offset is per-flight.** Estimated at init on five bags: 53.5°
+> (F9_02), 41.1° (F8), 26.5° (F3_01), 9.7° (F3_02), 152.6° (F6), 141.8° (F6c).
+> Its source is not identified — see §12.
 
 ---
 
 ## 3. Sources
 
-| Source | Rate | Role |
-|---|---|---|
-| ORB-SLAM3 increments | ~10 Hz | propagation input (the quantity being scaled) |
-| Altitude `RelativeAltitudeStamped` | **10 Hz** [M] | observes `p_z`, `b` |
-| Velocity `Vector3Stamped` | **10 Hz** [M] | observes `s` directly and `δθ_z` |
-| Attitude `AttitudeStamped` | **10 Hz** [M] | observes `δθ` |
-| Gimbal `AttitudeStamped` (tf) | **19 Hz** [M] | supplies `R_b_c` |
+| Source | Topic | Rate | Role |
+|---|---|---|---|
+| VO pose | `vo/pose` | ~20–32 Hz [M] | propagation input |
+| VO status | `vo/status` | every frame | tracking state, `vo_epoch` |
+| Altitude | `relative_altitude` | 8.9 Hz [M] | observes `p_z`, `b` |
+| Velocity | `speed_vector` | 8.9 Hz [M] | observes `s`, `δθ_z` |
+| Attitude | `attitude` | 8.9 Hz [M] | observes `δθ` |
+| Gimbal | `gimbal_joint_attitude` | 13.8–19 Hz [M] | supplies `R_b_c` |
 
-Altitude, velocity and attitude **share one telemetry packet and one measurement
-timestamp** [M] — verified by change-detection co-occurrence, so no
-inter-source interpolation error.
+Altitude, velocity and attitude share one telemetry packet and one timestamp.
+`vo/pose` carries no covariance; increment noise comes from `Σ_base · g` (§4.3).
 
-Gimbal attitude arrives on a **separate 19 Hz packet with its own timestamp**
-[M]. It is faster than the camera, so tf2 interpolation to any image time is
-available within ≤53 ms.
-
-**Timestamps.** All telemetry carries `header.stamp` in the ground-station ROS
-clock, mapped from the phone monotonic clock by a min-over-window offset
-estimator, with the phone-side stamp taken in a DJI key listener (true arrival
-time). Residual velocity delay measured at ~75 ms — see §5.3.
-
-Camera frames are stamped at decode time minus `VIDEO_LATENCY` **[T]**.
+**Ground truth (evaluation only).** OptiTrack ~100–108 Hz. Three handling rules:
+conjugate the published quaternion; **drop bit-identical consecutive poses**
+([M] 7.6 % on F9_02 — interpolating through repeats makes velocity a comb);
+and do not use the pre-takeoff window for frame constants — [M] the rigid body
+is untracked on the ground (1 unique pose in 1915 samples on F9_02).
 
 ---
 
-## 4. Prediction — driven by VO increments (~10 Hz)
+## 4. Timing
 
-### 4.1 Increment conditioning
+**[M] Every telemetry channel lags the physical event, and by different
+amounts.** Measured by cross-correlation against mocap on three bags:
 
-1. **Pair.** `ΔT_c = T_v_c(t₀)⁻¹ · T_v_c(t₁)` → `Δp_c`, `Δt = t₁ − t₀`.
-   Rotate into `v`: `Δp_v = R_v_c(t₀)·Δp_c`.
+| channel | lag vs mocap | differential vs attitude |
+|---|---|---|
+| attitude (yaw rate) | 38.1 ± 3.0 ms | — (reference) |
+| altitude (dz/dt) | 58.0 ± 5.4 ms | +20 ms |
+| velocity (\|v\|) | 73.2 ± 3.8 ms | **+35 ms** |
+| **VO pose** | **423 ± 17 ms** | **+385 ms** |
 
-2. **Discontinuity guard.** Discard, re-anchor to `T_v_c(t₁)`, **do not
-   propagate**, raise `VO_DISCONTINUITY` if any of:
-   - map ID changed, or loop-closure / global-BA event signalled;
-   - `ŝ·|Δp_v|/Δt` disagrees with `|v_dji|` beyond `GATE_V` [T] (enabled once
-     `σ_s < SIGMA_S_OK`);
-   - VO relative rotation disagrees with the DJI attitude delta over the same
-     interval beyond `GATE_R` [T];
-   - `Δt ∉ [0.5, 2.0] ×` nominal frame period.
+Only differentials matter: the common term is a clock offset plus shared
+latency and cancels. Re-stamping is applied in the **filter frontend**, never
+in the publisher — re-stamping at the source corrupts recorded bags and
+desynchronises topics that share a packet stamp.
 
-3. **tf lookup.** `R_b_c` needed at both `t₀` and `t₁`. The gimbal runs at 19 Hz
-   against a ~10 Hz camera, so tf2 interpolation covers `t₁` within ≤53 ms.
-   Use true interpolation; no ZOH fallback and no significant buffering delay.
+| constant | value | basis |
+|---|---|---|
+| `VO_DELAY` | **0.40 s** | [M] 0.345 (F9_02), 0.418 (F3_02), 0.430 (F6c) vs attitude |
+| `VEL_DELAY` | **0.035 s** | [M] velocity − attitude differential |
+| `ALT_DELAY` | not modelled | 20 ms, below altitude's dynamics |
 
-4. **Lever arm.** The gimbal auto-stabilises and cannot be locked, so the camera
-   translates relative to `base_link` on any airframe attitude change. With
-   `r_l` constant:
+**Why `VO_DELAY` is so large.** `camera_decoder_node` stamps every frame with
+`get_clock().now()` at the moment it leaves the decoder. No latency is
+subtracted. The 0.40 s is the whole OcuSync → phone → TCP → PyAV path. The
+decoder is already tuned for low latency (`nobuffer`, `low_delay`,
+`analyzeduration 0`, `thread_type NONE`), so this is a property of the link,
+not of the decode.
 
-   ```
-   Δℓ = ( R_n_b(t₁) − R_n_b(t₀) ) · r_l          [metres]
-   ```
+> **[?] `VO_DELAY` is per-flight**, spread ±45 ms across three bags, constant
+> to ~20 ms within each. A fixed 0.40 leaves ±45 ms rather than the 400 ms it
+> replaces. Stamping at capture on the phone would remove it properly.
 
-   `Δℓ` is metric, `Δp_v` is not — they cannot be summed here. Emit separately.
-   Treated as state-independent (its `δθ` dependence scales with `|r_l|` and is
-   second-order). Magnitude: ~9 mm per increment at 50 °/s, ~25% of `σ_alt`,
-   systematic during manoeuvres — hence compensated rather than absorbed in `Q`.
+> **Supersedes** the previous claim that the attitude delay is under 20 ms and
+> therefore not common-mode. Measured at 38 ms; the velocity differential is
+> 35 ms, not the 75 ms previously recorded.
 
-5. **Emit** `{Δp_v, Δℓ, Δt, Σ_v, g, flags}`.
+---
 
-### 4.2 Propagation
+## 5. Prediction
+
+### 5.1 Increment conditioning
+
+1. **Epoch guard, first.** If `vo_status.vo_epoch` changed, re-anchor, do not
+   propagate, raise `VO_DISCONTINUITY`, apply the §8 reset policy.
+2. **Pair.** `ΔT_c = T_v_c(t₀)⁻¹ · T_v_c(t₁)`; rotate into `v`.
+3. **Guards.** Discard and re-anchor if the implied speed disagrees with
+   `K_VEL·|v_dji|` beyond `GATE_V`, if VO rotation disagrees with the DJI
+   attitude delta beyond `GATE_R`, or if `Δt ∉ [DT_MIN, DT_MAX]`.
+4. **Gimbal lookup** by SLERP over the ring buffer. True interpolation, no ZOH.
+5. **Lever arm** `Δℓ = (R_n_b(t₁) − R_n_b(t₀))·r_l`, metric. Never summed with
+   `Δp_v`, which is not.
+
+### 5.2 Propagation
 
 With `u = R̄_n_v · Δp_v`:
 
 ```
-p⁺  = p + s·u − Δℓ
-s⁺  = s
-b⁺  = b
-δθ⁺ = δθ                                    (random walk)
-```
+p⁺ = p + s·u − Δℓ        s⁺ = s        b⁺ = b        δθ⁺ = δθ
 
-```
        ⎡ I₃   u   0   −s·[u]ₓ ⎤
-F  =   ⎢ 0    1   0      0    ⎥              (8×8)
+F  =   ⎢ 0    1   0      0    ⎥
        ⎢ 0    0   1      0    ⎥
        ⎣ 0    0   0     I₃    ⎦
+
+Q = blkdiag( s²·(R̄_n_v Σ_v R̄_n_vᵀ), q_s·Δt, q_b·Δt, q_θ·Δt·I₃ )
 ```
 
-```
-Q = blkdiag( s²·(R̄_n_v · Σ_v · R̄_n_vᵀ),  q_s·Δt,  q_b·Δt,  q_θ·Δt·I₃ )
-P⁺ = F·P·Fᵀ + Q
-```
+**`q_s` must be non-zero.** [M] With `q_s = 0`, `P_ss` decreases monotonically;
+combined with an understated `R_speed` it collapsed to 1 % relative on a 15 %
+error and `s` froze. `q_s = 1e-4` keeps `s` able to move.
 
-`q_s` [T] low but non-zero — holds `s` through hover.
-`q_b` [T] ≈ 0 — `b` constant per flight; the state absorbs per-flight datum
-variation, confirmed by the spread of fitted `b` across bags.
-`q_θ` [T] low — tracks VO orientation drift and slow magnetic variation.
+### 5.3 Process noise gain
 
-### 4.3 Process noise gain
+`Σ_v = Σ_base · g`, `g = g_feat · g_slew`, `g_feat = clip(n_ref/n_map_points, 1, CAP)`.
 
-```
-Σ_v = Σ_base · g          g = g_track · g_feat · g_slew
-```
-
-| Factor | Condition | Value |
-|---|---|---|
-| `g_track` | `OK` | 1.0 |
-| | `RECENTLY_LOST` | 10 |
-| | `LOST` | no increment — see §6 |
-| `g_feat` | always | `clip(n_ref / max(n_feat,1), 1, CAP)` [T] |
-| `g_slew` | always | `1 + κ·‖ω_gimbal‖` [T] |
-
-`κ` is expected to tune **low**: interpolation error over the 53 ms gimbal
-period is much smaller than the 208 ms this term was originally sized for.
+**Sizing rule, not a free knob:** keep `s²·Σ_base` well below `q_b·Δt`, or
+`p_z` absorbs the barometric drift instead of `b`.
 
 ---
 
-## 5. Updates
+## 6. Updates
 
-All three FC sources are 10 Hz and share one measurement timestamp. Process
-strictly in timestamp order. Joseph-form covariance update throughout:
+### 6.0 Admission
+
+**Dedupe altitude, not velocity.** [M] `T_HOLD = 0` for velocity: with the hold
+applied, accepted velocity updates over 50 s fell from 279 to 50, and the
+survivors were individually *worse* — residual rms 0.145 → 0.208 m/s and
+`angle(z,h)` 3.93° → 7.80°. The surviving samples cluster at accelerations
+where DJI and VO agree least. Altitude keeps the hold: repeated 0.1 m bins in
+hover are genuinely uninformative and `P_zz` otherwise shrinks by a spurious √N.
+
+> **Supersedes** the earlier reasoning that the dedupe was harmless. That was
+> tested in simulation, where per-sample SNR is far better than on hardware.
+
+**Ordering.** Strict effective-timestamp order, Joseph form, symmetrise after
+every step.
+
+### 6.1 Only velocity may move `s`
+
+```python
+K = P Hᵀ S⁻¹
+if kind is not VELOCITY:
+    K[IDX_S, :] = 0
+```
+
+**Why.** Altitude and attitude do not touch `s` in `H`, but propagation builds
+a `p_z`–`s` cross-covariance via `F[IDX_P, IDX_S] = u`, and the gain moves `s`
+through it — entangled with `b`. [M] Measured on F9_02: `cov_s_b` climbed
+1e-5 → 2.9e-3 and `s` slid 3.61 → 3.19 over 75 s of slow flight while the
+velocity update was correctly gated out. Blocking altitude alone left a 1.6 %
+residual leak through `P_s_θ`; blocking both holds `s` exactly. Joseph form is
+valid for any gain, so `P` stays symmetric and PSD.
+
+### 6.2 Attitude — all three axes
 
 ```
-y = z − h(x);   S = H·P·Hᵀ + R;   K = P·Hᵀ·S⁻¹
-x⁺ = x + K·y;   P⁺ = (I − K·H)·P·(I − K·H)ᵀ + K·R·Kᵀ
+z = Log( R_n_b^dji · R̄_n_b⁻¹ ),   H = [0₃ₓ₃ | 0 | 0 | I₃],   y = z
+R_att = diag(σ_rp², σ_rp², σ_yaw²)
 ```
 
-### 5.1 Attitude
-
-Applied **first** in each packet — it corrects the frame the other two are
-compared in.
-
-```
-R̄_n_b = R̄_n_v · R_v_c(t) · R_b_c(t)⁻¹
-y      = Log( R_n_b^dji · R̄_n_b⁻¹ )              (3-vector, nav frame)
-H      = [ 0₃ₓ₃ | 0 | 0 | I₃ ]
-R_att  = diag(σ_rp², σ_rp², σ_yaw²)
-```
-
-Because the residual is in the nav frame and nav z is up, the diagonal maps
-onto the trust split with no special-casing in code.
-
-| | | |
+| | value | basis |
 |---|---|---|
-| `σ_rp` | **0.035 rad (2°)** | [M] in-flight, vibration included. Static floor is 0.1°; the in-flight residual is structured rather than white, so 2° is deliberately conservative |
-| `σ_yaw` | **large — skip the yaw row** | **[T]** see §10 |
+| `σ_rp0` | **0.012 rad (0.69°)** | [M] residual sd 0.66° roll, 0.80° pitch |
+| `σ_yaw` | **0.011 rad (0.63°)** | [M] DJI attitude vs mocap: 0.19° sd over 229 s (F9_02), 0.28° (F3_02) |
+| `accel_slope` | 1/g | physics, not tuned |
 
-Static yaw drift measured at −1.2° over 116 s [M] — slow and bounded, which is
-encouraging but not yet a substitute for a characterised `σ_yaw`.
+`σ_rp` is acceleration-scheduled: a quadrotor tilts to accelerate, so a
+gravity-referenced tilt estimate under-reports by ~`atan(a_h/g)`. `a_h` must
+come from differentiated DJI velocity, never from DJI's own tilt.
 
-### 5.2 Altitude — `RelativeAltitudeStamped`
+> **[?] The attitude yaw residual is not Gaussian and not small.** [M] On
+> F9_02: roll mean +0.30° sd 0.66°, pitch +0.21° sd 0.80° — both correctly
+> sized — but **yaw mean −22.8°, sd 28.0°**, giving 29 % acceptance at NIS 94.
+> Since DJI attitude yaw tracks mocap to 0.19°, the error is in the VO chain
+> (`R_LINK_OPTICAL`, the gimbal yaw negation in `camera_decoder`, or
+> ORB-SLAM3 yaw drift), not in DJI. **Do not inflate `σ_yaw` to compensate** —
+> that models a bias as noise. Unresolved; it costs published-orientation
+> accuracy but demonstrably not position (see §11).
 
-Height above takeoff, terrain-blind. With `n` origin at takeoff it observes
-`p_z` directly — no terrain term.
-
-**[M] The gain is unity.** `KeyAltitude` fits OptiTrack with slope
-`1 + k` where `k_up = −0.0020`, `k_down = +0.0002`, `k_hover = −0.0008` — all
-within 0.2% of one, from 338 climb and 366 descend samples. The
-direction-dependent correction inherited from the old `altitude_agl` key
-(`k_up = −0.0699`, `k_down = −0.0468`) **does not apply to this key and is
-removed**, along with `VZ_DEAD` and `K_DEFAULT`.
+### 6.3 Altitude
 
 ```
-h(x) = p_z + b
-H    = [ 0, 0, 1, 0, 1, 0, 0, 0 ]
-R    = R_alt
+h(x) = p_z + b,   H = [0, 0, 1, 0, 1, 0, 0, 0]
 ```
 
-| | | |
+[M] Gain is unity; no direction-dependent correction. `R_alt` switches on
+`|v_z| > VZ_INFL`. `b` cannot be datumed on the ground (the key returns exactly
+0.000 when grounded), so its prior must be wide.
+
+### 6.4 Velocity
+
+```
+w_v = Δp_v/Δt,  u_w = R̄_n_v·w_v
+h(x) = s·u_w − Δℓ/Δt
+H    = [ 0₃ₓ₃ | u_w·(speed ≥ V_LOW) | 0₃ₓ₁ | −s·[u_w]ₓ ]
+z    = v_enu / K_VEL,   R = R_speed_eff
+```
+
+**`s` is refined on transits and held through passes.** The scale column is
+zeroed unless **both** sides carry speed: `|v_dji| ≥ V_LOW` (measurement) and
+`|u_w| ≥ V_VO_MIN` (prediction). [M] On F6 the VO increment was near zero
+(87 % of `|h|` below 0.02 m/s) while DJI occasionally read 0.3–0.4 m/s, so the
+innovation was the whole measurement and the scale gain was unbounded. [M] Below it the velocity error is a *bias*, not noise —
+DJI's gain droops toward 0.77–0.82 against 0.93 at 1 m/s — so `V_INFL` slows
+the damage without preventing it: an 87 s inspection segment dragged `s` from
+3.53 toward 2.7 while `σ_s` stayed under 8 %.
+
+**`R` must include the increment noise.** `h = s·u_w` is built from a
+*measured* increment whose noise `Σ_v` otherwise enters only `Q`:
+
+```
+R_speed_eff = R_speed_base/K_VEL² + s_ref²·(R̄_n_v Σ_v R̄_n_vᵀ)/Δt²
+```
+
+[M] Scaled by `s ≈ 3.5` and divided by `Δt ≈ 0.03`, that term is *larger* than
+`R_speed` itself (0.11 vs 0.057 m/s). Adding it dropped median accepted NIS
+from 4.88 to 1.82 while `R_speed_h` was simultaneously reduced 3×. `s_ref`, not
+the live `s`: `R` must not depend on the state being estimated.
+
+| | value | basis |
 |---|---|---|
-| `R_alt` (hover) | **0.00142 m²** (σ = 0.038 m) | [M] reproduces the earlier 0.00138 independently |
-| `R_alt` (vertical motion) | **0.0104 m²** (σ = 0.102 m) | [M] noise grows ~7× during climbs |
-| quantisation floor | 0.00083 m² (q²/12, q = 0.1 m) | ~60% of hover variance |
-| `b` prior mean | **+0.042 m** | [M] from the vertical-sweep fit |
-| `VZ_INFL` | 0.15 m/s | [T] threshold for switching to the inflated `R_alt` |
+| `K_VEL` | **0.87** | [M] see below |
+| `R_speed_h` | 0.0011 m²/s² | [M] |
+| `V_MIN` / `V_LOW` | 0.15 / 0.40 m/s | [M] dead-zone thresholds |
+| `NIS_GATE_VEL` | 60.0 | loose: `H[:,s] = u_w` makes `S` asymmetric in the innovation sign, so a tight gate culls one sign |
 
-**`b` cannot be datumed on the ground.** `KeyAltitude` returns exactly 0.000
-when grounded [M], so a grounded start carries no bias information. Take the
-prior from the fitted value above and re-estimate per flight as a state.
+**`K_VEL = 0.87`, by two independent routes.** Integrated path ratio against
+mocap over windows ≥ 0.4 m/s gave 0.875 (F9_02) and 0.856 (F3_02); the method
+reads 1–1.5 % low, putting it at 0.87–0.88. Independently, ground truth
+requires init `s ≈ 3.78` on F9_02, and `s ∝ 1/K_VEL`, giving 0.873. Confirmed
+on an untuned bag: F3_02's fitted scale factor is **0.9945 ± 0.036**.
 
-No detectable ground effect: hover-bias-versus-height slopes were small and
-inconsistent in sign across bags [M].
+> **Supersedes** `K_VEL = 0.91`, which came from regression against
+> differentiated mocap — differentiation at 100 Hz aliases noise and attenuates
+> fitted gains. Raw arc length has the same failure: it measures the noise's
+> own path, inflating low-speed path by 7–13 % and producing a fake dead-zone
+> droop. Always resample → smooth → differentiate.
 
-### 5.3 Velocity — `Vector3Stamped`
+### 6.5 One update may not rewrite `s`
 
-**[M] Frame is world (NED, magnetic-north-referenced).** Confirmed on three
-bags with fit-residual ratios 3.53, 1.19, 1.76 against the body-frame
-hypothesis. Gains: z = **−0.92 to −0.95** (down-positive, confirmed); the
-horizontal 2×2 block is a **rotation of ~120°, not a signed permutation** —
-so `axis_perm`/`signs` do not apply to x/y and the angle is estimated as
-`δθ_z`.
-
-**[M] The lag is a delay, not a filter.** Fitted one-pole `τ = 0.03–0.06 s`
-(under half a sample period) with a pure delay of 50–100 ms. So the matched-
-filter approach of applying `L{·}` to the prediction is unnecessary: **re-stamp
-the measurement at `t − VEL_DELAY`** and treat it as white. This removes the
-increment-buffer dependency from the velocity update.
-
-```
-w_v   = Δp_v / Δt                          (unscaled, in v, latest increment)
-u_w   = R̄_n_v · w_v
-h(x)  = s·u_w − Δℓ/Δt − ω_b × r_imu        (lever arms: DJI measures IMU-point
-                                            body motion, VO measures camera)
-H     = [ 0₃ₓ₃ | u_w | 0₃ₓ₁ | −s·[u_w]ₓ ]  (3×8)
-R     = R_speed
+```python
+if kind is VELOCITY and |dx[IDX_S]| > S_STEP_MAX · s:
+    dx[IDX_S] = sign(dx[IDX_S]) · S_STEP_MAX · s
 ```
 
-One 3-vector, two observable quantities in orthogonal directions: **`s` along
-`u_w`, `δθ_z` perpendicular to it.**
+`s` is a per-flight constant estimated from many samples (§7). A single
+innovation with authority to halve it means `P_ss` is wide and the sample is an
+outlier, not that the scale changed.
 
-| | | |
-|---|---|---|
-| `VEL_DELAY` | **0.075 s** | [M] mean of 50/50/100/0 ms, quantised to the 50 ms analysis grid — do not over-fit |
-| `R_speed` | **0.002 m²/s²** (σ ≈ 0.045 m/s) | [M] ~2.4× the quantisation floor; far cleaner than the "heavily pre-filtered, inflate generously" assumption |
-| NED→ENU | `(x,y,z) → (y,x,−z)` | [M] z sign confirmed; residual yaw handled by `δθ_z` |
-| `r_imu` | `[0.07, 0.0, 0.0] m` | `base_link` is at the body rear, so the DJI IMU sits ~7 cm forward |
+[M] Without the cap, two velocity updates 100 ms after init moved `s`
+2.778 → 1.032 → 0.247 on F6 and then to the 1e-3 clamp, where `p⁺ = p + 0.001·u`
+froze position for 23 s of a 43 s flight (`|Δp_est|/|Δp_gt| = 0.003`). Both
+updates passed every gate: `|u_w|` was 0.169 and 0.147, above `V_VO_MIN`.
 
-**`r_imu` matters only during rotation.** `|ω × r_imu| ≈ 6 cm/s` at 50 °/s,
-about 1.3σ of `R_speed`; at inspection rates (10 °/s) it is 1.2 cm/s and
-negligible. Folded into the same lever-arm term as `Δℓ` rather than modelled
-separately.
+`S_STEP_MAX = 0.15`. [M] Fires 12 times on F6, 8 on F6c, **2** on F9_02 over
+200 s — inert on transit flights, where `s` converges in far smaller steps.
+
+> **[?] The cap is applied to `dx`, not to `K`.** The Joseph form below uses
+> the unlimited `K`, so `P_ss` contracts as though the full step had been
+> taken. Measured `σ_s` stays at 0.47–0.50 on both F6 and F9_02, so the
+> inconsistency is not currently biting. Scaling `K[IDX_S, :]` instead would be
+> the consistent form; revisit if `σ_s` ever shrinks while `s_lim` climbs.
 
 ---
 
-## 6. Failure handling
+## 7. Initialisation
+
+- `p_x, p_y = 0`; **`p_z = z_alt − b_prior`**. [M] Init happens mid-flight, and
+  altitude is takeoff-relative, so `p = 0` makes the first altitude residual
+  the whole height: 240 of ~800 updates NIS-rejected and a permanent 1.5 m
+  offset. `p_z` is observed by nothing else, so the rejection is self-sustaining.
+- `R̄_n_v = R_n_b^dji(t₀) · R_b_c(t₀) · R_v_c(t₀)⁻¹`. This gravity-aligns `n`.
+- `s` estimated from `K_VEL⁻¹·|v_dji| / (|Δp_v|/Δt)` over samples with
+  `|v_dji| > V_LOW`.
+- **Gate on PATH, not time.** Collection requires 60 samples spanning
+  `INIT_PATH_M = 3.0 m`. [M] The previous 12 s excitation gate ran *in series*
+  with collection and was unsatisfiable on inspection profiles: four of seven
+  bags published nothing. `INIT_TRANSLATION_S` was sized for monocular
+  parallax, which ORB-SLAM3 has already had by the time it reports `pose_valid`.
+
+> **[?] The scale estimator is noisy.** [M] Per-sample scatter sd 3.54 on a
+> median of 4.17 — 84 % relative — because the ratio divides by an
+> instantaneous VO speed. Two draws from the same bag gave 3.776 (n=60) and
+> 4.222 (n=131), a difference within its own standard error. No speed or time
+> dependence was found. An integrated path ratio would remove the division;
+> untested. Not critical while `estimate_scale = 1`, since the filter converges
+> from any start — it matters only for the held configuration.
+
+---
+
+## 8. Failure handling
 
 VO is the propagation input, so losing it is a **propagation gap**, not a
-rejected measurement.
+rejected measurement. Key on `pose_valid`, never on the string `LOST` — in pure
+monocular, ORB-SLAM3 overwrites `LOST` within the same `Track()` call.
 
 | Condition | Action |
 |---|---|
-| `RECENTLY_LOST` | propagate normally, `g_track = 10` |
-| `LOST`, `VO_DISCONTINUITY`, or tf timeout | dead-reckon: `p⁺ = p + v_dji,n·Δt`, `Q_p` inflated; hold `s`, `b`, `δθ` |
-| **telemetry transport gap** (no packet > 500 ms) | degraded; hold state, inflate `Q` |
-| degraded > recovery timeout | state machine forces `Landing` |
+| any state ≠ OK, once initialised | dead-reckon on `K_VEL⁻¹·v_dji`, `Q_p` inflated |
+| no `vo/pose` > `VO_TIMEOUT` | dead-reckon |
+| telemetry gap > 500 ms | degraded; hold state, inflate `Q` |
 
-Dead reckoning uses `R_n_b` **from DJI attitude directly**, not from the VO
-chain — the VO chain is stale precisely when this path is active.
+### 8.1 Reset policy on `vo_epoch` change
 
-Degradation flag = `LOST` ∨ `VO_DISCONTINUITY` ∨ `TRANSPORT_GAP` ∨
-`σ_s > SIGMA_S_MAX`. Do **not** gate on `tr(P_pp)` — see §7.
+**Publishing never stops.** A rebuild invalidates `s` alone — `p` and `b` live
+in the nav frame. [M] Dropping out of the initialised state cost 130 s of a
+229 s flight, because the cold-start path then waited for excitation the
+aircraft never supplied.
 
-> Distinguish **transport gap** (no packets arriving — a real fault) from
-> **value staleness** (packets arriving, values unchanged — normal when
-> stationary, since DJI values are quantised and the stamp only advances on
-> change).
+| Reason | Detection | Action |
+|---|---|---|
+| Sim(3) loop closure / merge | epoch changed, state stayed OK | re-anchor; inflate `P_ss`; keep `s` |
+| Map rebuild / re-init | epoch changed via NOT_INITIALIZED | re-anchor; keep `s`; inflate `P_ss`; request re-measure |
+
+**Do not reset `s` to 1.0.** It becomes *unknown*, not *one*, and the position
+loop keeps running through the transient. On F9_02 the reset cost ~90 s of
+recovery from a 3.8× scale error.
+
+**Cap the inflation** at `min(P_ss·4, (0.15·s)²)`. [M] Uncapped, `P0_scale`
+took `σ_s` to 28 % relative, which re-opened the `p_z`–`s` cross-covariance
+before §6.1 was in place.
+
+**The re-measure works.** [M] `_maybe_rescale` completed three times on F8
+(`s` 2.951 → 3.799 and 3.754 → 4.231 from ~2 m of path) and once on F3_01
+(4.040 → 5.002). It does not complete on a flight that never exceeds `V_LOW`.
+
+> **[?] Whether a rebuilt map keeps the previous scale is bag-dependent.** On
+> F9_02 two maps agreed to 1 % (implied truth 3.85 vs 3.79). On F8 the fitted
+> factors ran 1.05–1.33 across 16 rebuilds. With a rebuild every ~12 s, `s` is
+> re-measured before it has converged — a VO stability limit, not a gate
+> problem. See `operating_conditions.md` §4.1.
 
 ---
 
-## 7. Observability
+## 9. Observability
 
 | Quantity | Observed by | Degenerate when |
 |---|---|---|
-| `s` | velocity (direct, along `u_w`) | no motion |
-| `s` | altitude (via `p_z` growth) | no vertical motion |
-| `b` | altitude, over vertical range | small height range — correlates with `s` |
+| `s` | velocity, along `u_w`, above `V_LOW` | no transit |
+| `b` | altitude over vertical range | small height range |
 | `p_z` | altitude | — |
-| `δθ_x, δθ_y` | attitude (roll/pitch, strong) | — |
-| `δθ_z` | velocity (perpendicular to `u_w`); attitude yaw if trusted | no horizontal motion |
+| `δθ_x, δθ_y` | attitude roll/pitch | — |
+| `δθ_z` | attitude yaw; velocity ⊥ `u_w` | — |
 | `p_x, p_y` | **nothing** — dead-reckoned | always |
 
-Consequences that change code:
-
-- **`P_xx`, `P_yy` grow monotonically** and no update reduces them. Gating
-  degradation on `tr(P_pp)` will fire on any sufficiently long healthy flight.
-  Gate on `σ_s` or innovation consistency instead.
-- **Publish `odom→base_link` only.** `map→odom` is identity, published
-  separately (static publisher in `localisation.launch.py`), replaced later by
-  an ArUco or other global corrector with no downstream change.
-  `localisation/pose.header.frame_id = "odom"`.
-- **Evaluate with RPE over short windows**, not ATE — ATE is dominated by drift
-  this filter structurally cannot correct.
-- Monitor the `s`–`b` off-diagonal of `P`, not just the marginals.
-- With `σ_yaw` set large, **`δθ_z` depends entirely on the velocity update**, so
-  it is unobservable in pure hover. Hold it with low `q_θ`.
+Consequences: `P_xx`, `P_yy` grow monotonically, so **never gate degradation on
+`tr(P_pp)`** — use `σ_s` or innovation consistency. Publish `odom→base_link`
+only. **Evaluate with RPE over short windows, not ATE** — ATE on a
+dead-reckoned `x, y` measures elapsed time, not quality.
 
 ---
 
-## 8. Initialisation
+## 10. Output contract
 
-- `p = 0`, `P_pp` small (takeoff datum).
-- `b` ~ N(+0.042, σ_b²) [M] — re-estimate per flight; **do not datum on the
-  ground**, `KeyAltitude` reads exactly zero there.
-- **`R̄_n_v` from DJI attitude at `t₀`:**
-  `R̄_n_v = R_n_b^dji(t₀) · R_b_c(t₀) · R_v_c(t₀)⁻¹`.
-  This is what gravity-aligns the nav frame. Without it the entire chain
-  inherits ORB-SLAM3's arbitrary initial orientation.
-- `δθ = 0`; `P_θθ` per attitude uncertainty at init — **loose in yaw** (the
-  room-to-magnetic-north offset is ~120° in this arena and is absorbed by
-  `δθ_z`, so initialise `σ_δθz` wide).
-- `s`: **not** a fixed constant. Estimate from `|v_dji| / (|Δp_v|/Δt)` over the
-  first excited window; `P_ss` wide until `σ_s < SIGMA_S_OK`.
-- §4.1 plausibility gate disabled until `σ_s < SIGMA_S_OK`.
-- Gate init on the clock-offset tracker being warm and on the aircraft being
-  airborne (altitude > 0.3 m and moving) — DJI keys return defaults on the
-  ground.
-- Monocular VO cannot initialise under pure rotation. Allow a deliberate
-  translation after takeoff before declaring the filter ready.
-
----
-
-## 9. Tuning and validation
-
-- Tune `Σ_base`, `q_s`, `q_b`, `q_θ`, `κ`, `n_ref`, `CAP` by NEES / normalised
-  innovation consistency vs OptiTrack (target ≈ 1).
-- **Fix the OptiTrack rigid body before trusting any yaw comparison.** The
-  current marker layout is near-symmetric, so the solver flips yaw by ~180°
-  during rotation [M] — visible as ±170° plateaus in the attitude residual and
-  as a 180° discrepancy in the fitted mocap↔`base_link` offset. Rebuild with an
-  asymmetric layout.
-- Identify `L`/`VEL_DELAY` from the **velocity residual against OptiTrack**,
-  not from the autocorrelation of the velocity signal — the latter is dominated
-  by smooth physical motion and over-estimated `τ` by ~5× in this dataset.
-- When differentiating mocap position, **resample to the analysis grid first,
-  then differentiate** — differentiating at native mocap rate and interpolating
-  afterwards aliases noise and inflated the fitted gains by ~4.5×.
-- **Check `δθ` against OptiTrack directly** — it is an estimated quantity with
-  ground truth available, so it is independently verifiable rather than only
-  visible through its effect on `s`.
-- Vertical sweep with real height range to separate `s` from `b`.
-- **Verify `F` and both `H` by finite differences before any flight data.** The
-  `−s·[u]ₓ` blocks and the error-state reset make sign errors easy and quiet: a
-  wrong sign yields a filter that converges plausibly and is wrong, and NEES
-  tuning will not reveal it because the result is self-consistent.
-- **Run offline on a rosbag, deterministically, from the first commit.** Every
-  step above is an iteration over recorded data; a filter that only runs live
-  cannot be tuned.
-
----
-
-## 10. Constants
-
-### Measured [M]
-
-| Constant | Value |
-|---|---|
-| `r_l` | `[0.117, 0.0, −0.030] m` |
-| `r_imu` | `[0.07, 0.0, 0.0] m` |
-| `R_alt` (hover / vertical) | `0.00142` / `0.0104 m²` |
-| `b` prior mean | `+0.042 m` |
-| altitude gain | **unity** — `k` terms removed |
-| velocity frame | world, NED, magnetic-north-referenced |
-| velocity z sign | negative (down-positive) |
-| `VEL_DELAY` | `0.075 s` |
-| `R_speed` | `0.002 m²/s²` |
-| `σ_rp` | `0.035 rad` |
-| source rates | FC 10 Hz, gimbal 19 Hz |
-| quantisation | altitude 0.1 m, velocity 0.1 m/s |
-
-## 11. Decisions and superseded alternatives
-
-Recorded because each replaced a plausible alternative that may otherwise
-resurface.
-
-- **VO is the propagation input, not a measurement.** Nützi/MSF treat VO as an
-  update because an IMU propagates; no IMU is exposed here, so the roles invert
-  and VO noise enters `Q`, never `R`. Listing VO under both would double-count
-  the same data.
-- **`s` and `b` are filter states, not preprocessing.** Rules out
-  `robot_localization`, whose 15-state vector cannot be extended — unscaled VO
-  fused against metric altitude there is averaged, not scaled.
-- **Velocity is the primary scale cue, not altitude.** Only velocity's Jacobian
-  touches `s` directly; altitude reaches it via the `p_z`–`s` cross-covariance
-  and arrives entangled with `b`.
-- **Altitude enters as a measurement model, not a pre-correction.** Dividing the
-  measurement without dividing its covariance would misstate `R_alt`.
-- **`odom→base_link` only.** `p_x, p_y` are unobserved, so this filter cannot
-  claim global drift correction; `map→odom` stays identity until a corrector
-  exists.
-- **RPE over short windows, not ATE.** ATE is dominated by drift the structure
-  cannot correct.
-- **DJI velocity is world-frame NED, magnetic-north-referenced**, at ~120° to
-  the room frame in this arena — hence `δθ_z` rather than an axis permutation.
-
-### To determine [T]
-
-| Constant | Source | Blocks |
+| Topic | Type | Consumer |
 |---|---|---|
-| `σ_yaw` | asymmetric mocap rigid body + yaw survey | attitude yaw row (currently skipped) |
-| `VIDEO_LATENCY` | camera-yaw-rate cross-correlation vs composed `R_n_b·R_b_c` | all VO timestamping |
-| `Σ_base`, `n_ref`, `CAP`, `κ` | NEES tuning with VO | prediction noise |
-| `q_s`, `q_b`, `q_θ` | NEES tuning | prediction noise |
-| `GATE_V`, `GATE_R` | VO flight tests | discontinuity gating |
-| `SIGMA_S_OK`, `SIGMA_S_MAX` | VO flight tests | init and degradation |
-| `VZ_INFL` | altitude residual vs `|vz|` | `R_alt` switching |
+| `localisation/pose` | `PoseWithCovarianceStamped` | controller, planner, evaluation |
+| `localisation/status` | `LocalisationStatus` | state machine |
+| `/tf` | `TFMessage` | `odom→base_link` only |
 
-Nothing in the **[T]** list blocks implementation — all have workable defaults.
+Position from `p`. Orientation composed at publish time from
+`R̄_n_v · R_v_c · R_b_c⁻¹`. **Stamp with the (VO_DELAY-corrected) VO stamp,
+never `now()`** — confirmed by evaluation: the fitted mocap offset on a clean
+segment is +0.015 to +0.025 s against an independently measured attitude lag of
++0.035 s.
+
+Covariance is required, not optional: the planner needs localisation
+uncertainty at viewpoint-selection time, and that coupling is the research
+contribution.
+
+---
+
+## 11. Measured performance
+
+F9_02, configuration of §13, against OptiTrack. RPE over 1 s windows per
+`vo_epoch` segment. `scale` is the fitted residual factor: 1.00 = correct.
+
+| segment | profile | scale | RPE 1 s (scale-corrected) | as the system runs |
+|---|---|---|---|---|
+| 0, 87 s | transit | 1.020 | **6.2 %** | 6.5 % |
+| 2, 87 s | inspection after transit | **1.003** | 8.6 % | 8.4 % |
+| 1, 22 s | [?] anomalous | 0.169 | 67 % | 125 % |
+
+[M] `K_VEL = 0.87` is confirmed independently on F3_02, which was never tuned
+against: fitted scale 0.985 ± 0.047.
+
+The cross-bag envelope and the conditions it depends on are in
+`operating_conditions.md` §1; they are not repeated here.
+
+> **[?] Segment 1 is unexplained.** 2.2× excess motion with correct yaw
+> (0.27° within-window) and a frame fit that reads 101°/127°/178° across
+> otherwise identical runs — instability characteristic of a discontinuity
+> *inside* the segment rather than a constant error.
+
+---
+
+## 12. Evaluation strategy
+
+Every claim in §4, §6 and §11 came from one of the procedures below. They are
+recorded so a change can be re-checked cheaply, and so a new bag can be brought
+into the envelope without re-deriving the method.
+
+### 12.1 Which bag answers which question
+
+| bag | profile | what it is for |
+|---|---|---|
+| **F9_02** | transit + inspection, 5 epochs | the reference. Any change is regression-tested here first |
+| **F3_02** | fast square | untuned cross-check. Its fitted scale (0.9945–0.985) is the independent confirmation of `K_VEL` |
+| **F8** | vertical squares, 16 epochs in 191 s | behaviour under rapid map churn. Not a tuning case |
+| **F6, F6c** | slow sweep at a wall | the failure boundary. VO under-translation, not a filter case |
+| **F3_01** | slow square, 7 epochs in 106 s | as F8: no segment survives long enough to evaluate |
+| **F9** | inspection, no transit | the correct-refusal case: never reaches `INIT_PATH_M` |
+
+Never tune on F9_02 alone. [M] `psi_v`, epoch-straddling init pools and an
+acceleration bias each looked well-founded on F9_02 and were each refuted —
+twice by a cross-bag check, once by measuring the estimator's own scatter.
+
+### 12.2 Regression, after any change (~10 min)
+
+Replay **F9_02** and **F6** with `innovation_log` set and
+`/drone_1/localisation/pose` recorded, then:
+
+```bash
+grep -E 'initialised:|rebuild|rescaled' $LOG
+grep 'HEALTH' $LOG | tail -1
+python3 scale_series.py $CSV 180
+python3 evaluate_pose.py $POSE_BAG F9_02_mocap --flight F9_02
+```
+
+Pass conditions:
+
+| check | expected | meaning if it moves |
+|---|---|---|
+| F9_02 seg 0 `RPE1s%` | 6.2 % | the change hurt the working case |
+| F9_02 seg 2 `scale` | 1.00 ± 0.01 | scale estimation broken |
+| accept rates | alt 99.9 %, vel ~62 %, att ~28 % | a channel started rejecting |
+| `s_clamp` | 0 | `s` went non-physical |
+| `s_lim` | ≤ 2 on F9_02 | the step cap is throttling real convergence |
+| F6 `ratio1s` | 0.286 | position integration changed |
+
+Current reference values: F9_02 seg 0 `RPE1s%` 6.21, seg 2 8.57, `s_lim` 2;
+F6 `RPE1s%` 72.21, `ratio1s` 0.286. **If a change improves these, update the
+table** — it is a reference, not a ratchet.
+
+**Compare accept RATES, not HEALTH counts.** The counters are cumulative from
+process start and scale with replay length; comparing counts across runs of
+different length produces false alarms.
+
+### 12.3 Full sweep, before a release (~40 min)
+
+All seven bags, same configuration, `evaluate_pose.py` per bag. Report the §11
+table plus the envelope in `operating_conditions.md` §1. A change that improves
+F9_02 and degrades any other bag is not an improvement.
+
+### 12.4 Characterisation, when a constant is in doubt
+
+Each measures one quantity against mocap with no filter in the loop:
+
+| script | measures | notes |
+|---|---|---|
+| `gt_align2.py` | flight↔mocap clock offset | three cues; requires all three to agree within ~50 ms |
+| `channel_lags2.py` | per-channel latency incl. VO | differentials cancel the common clock term |
+| `vo_delay.py` | `VO_DELAY`, mocap-free | VO \|ω\| vs DJI attitude \|ω\|; rejects segments with peak < 0.45 |
+| `kvel_check.py` | `K_VEL` | integrated path ratio. Reads 1–1.5 % low |
+| `yaw_datum.py` | which yaw datum is displaced | `A − B` is contaminated by the rigid-body offset — read `A` and `B` separately |
+
+Two method rules, both learned by getting them wrong:
+
+- **Resample → smooth → differentiate.** Raw arc length at 100 Hz sums the
+  noise's own path: [M] it inflated low-speed path 7–13 % and produced a fake
+  dead-zone droop in `K_VEL`.
+- **Validate the tool on synthetic data with a known injected value before
+  trusting it on a bag.** Every script above recovers a known input to better
+  than 1 %; two of them did not until the validation exposed a sign error and a
+  midpoint-stamping bias.
+
+### 12.5 Analysing the innovation log
+
+| script | question |
+|---|---|
+| `scale_series.py` | did `s` hold, and are the accept rates sane |
+| `decompose_velocity.py` | is the velocity residual a direction error or a magnitude error |
+| `residual_structure.py` | is it a scale error or a constant offset, and is `R` sized right |
+| `gate_symmetry.py` | is the NIS gate culling one sign |
+
+`evaluate_pose.py` reports two RPE columns. `RPE1s%` has scale removed by
+Umeyama — the filter's achievable accuracy. `ro1s%` fixes the frame but not
+scale — what the live system produces. **The gap between them is the cost of
+the scale error**; when they converge, scale is no longer the limiting term.
+
+A time offset pinned at `--scan` is not a fit: it means `s` is not constant
+within that segment, and every number for that segment should be discarded.
+
+---
+
+## 13. Configuration
+
+```
+estimate_scale 1.0    sigma_yaw 0.011    R_speed_h 0.0011
+q_s 1e-4              T_HOLD 0.0         K_VEL 0.87
+VO_DELAY 0.40         VEL_DELAY 0.035    INIT_PATH_M 3.0
+V_VO_MIN 0.05         S_STEP_MAX 0.15
+```
+
+### Decisions and superseded alternatives
+
+- **VO is the propagation input, not a measurement.** No IMU is exposed, so VO
+  noise enters `Q`, never `R`.
+- **`s` and `b` are filter states**, which rules out `robot_localization`.
+- **`estimate_scale = 0` does not hold `s` by itself.** It only zeroes the
+  velocity Jacobian; the covariance must be held too (`P_ss` row and column
+  zeroed). [M] Without it, an `s` seeded exactly at truth was dragged to 73 % of
+  it in 80 s.
+- **Only velocity moves `s`** (§6.1).
+- **`K_VEL` is a constant, not a state** — co-linear with `s`.
+- **Velocity re-stamping and `VO_DELAY` are applied in the frontend**, not in
+  the publishers.
+- **The attitude yaw row is enabled.** DJI attitude yaw is the best-measured
+  quantity in the system (0.19° vs mocap).
+- **A per-flight velocity yaw offset (`psi_v`) was tried and reverted.** [M]
+  Applied in either sign it made things worse — attitude acceptance fell to
+  61 % and 29 % respectively, from 98 %. The measured 53.5° is the disagreement
+  between the attitude-seeded nav frame and the VO-derived heading, which is
+  what `δθ_z` already absorbs; correcting the velocity signal removed the
+  update's ability to correct the frame. It is still logged at init as a
+  diagnostic.
+- **`q_θz` is not sized from DJI yaw drift.** The −1.2° over 116 s figure is
+  contradicted: DJI attitude yaw shows no drift against mocap over 229 s.
+
+### Retired
+
+The mocap↔nav tilt of 1.152° at bearing −164.9° and the mocap↔`base_link` yaw
+of 128.5° **could not be re-verified** — the rigid body is untracked on the
+ground, and the airborne fit gives −104.6° (F9_02) and −122.0° (F3_02), which
+differ between sessions. Treat both as per-session constants requiring a fresh
+fit, not as inherited values.
+
+---
+
+## 14. Open work, in order
+
+1. **The attitude yaw residual** (§6.2). [M] Mean −22.8°, sd 28.0° on F9_02,
+   against correctly sized roll and pitch. DJI attitude yaw tracks mocap to
+   0.19°, so the error is in the VO chain. Isolate whether it enters via
+   `R_b_c` or via VO by comparing each against mocap separately. This costs
+   published-orientation accuracy, not position — but a viewpoint planner
+   consumes orientation.
+2. **`no_inc` losses** — [M] 478 of 1224 velocity events on F9_02, 401 of 1353
+   on F8, lack a covering increment.
+3. **Integrated-path scale estimator at init** (§7), if the held configuration
+   is ever needed. [M] The present per-sample estimator has 84 % relative
+   scatter.
+4. **Transport-gap detection.** Dedupe happens at source, so a stationary
+   aircraft and a dead link are identical on the wire. Needs a fixed-rate
+   liveness heartbeat in `dji_node`.
+5. **F9_02 segment 1** (§11), 22 s of 176, unexplained.
+
+**Not filter work.** F6, F6c, F8 and F3_01 fail on VO input quality — see
+`operating_conditions.md` §4.1. [M] On each, the filter's own scale is correct
+or recovers; no update-side change can compensate for motion absent from the
+propagation input or a frame re-anchored faster than it converges.

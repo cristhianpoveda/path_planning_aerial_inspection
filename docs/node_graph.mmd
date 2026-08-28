@@ -37,11 +37,13 @@ flowchart TB
     TF([" /tf · /tf_static "])
 
     %% --- perception ---
-    DEC -->|"camera/image_raw<br/>sensor_msgs/Image"| SLAM
+    DEC -->|"camera/image/compressed<br/>sensor_msgs/ImageCompressed"| SLAM
 
     %% --- telemetry into EKF (stamped with measurement time) ---
-    DJI -->|"speed_vector<br/>geometry_msgs/Vector3<br/>no msg duplication"| EKF
-    DJI -->|"altitude_agl<br/>std_msgs/Float64<br/>no msg duplication"| EKF
+    DJI -->|"speed_vector<br/>geometry_msgs/Vector3Stamped<br/>no msg duplication"| EKF
+    DJI -->|"relative_altitude<br/>drone_interfaces/RelativeAltitudeStamped<br/>no msg duplication"| EKF
+    DJI -->|"gimbal_joint_attitude<br/>drone_interfaces/AtitudeStamped<br/>no msg duplication"| EKF
+    DJI -->|"attitude<br/>drone_interfaces/AtitudeStamped<br/>no msg duplication"| EKF
 
     %% --- localisation internal + output ---
     SLAM -->|"vo/pose (no-scale)<br/>geometry_msgs/PoseWithCovarianceStamped"| EKF

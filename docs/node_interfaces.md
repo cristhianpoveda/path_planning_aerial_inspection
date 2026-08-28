@@ -15,13 +15,13 @@ Job: bidirectional bridge between the modified WildBridge and ROS over TCP/UDP.
 | Direction | Topic | Type | Notes |
 |-----------|-------|------|-------|
 | pub | `speed_vector` | `geometry_msgs/Vector3Stamped` | stamp with measurement time |
-| pub | `relative_altitude` | `std_msgs/Float64` | Height above launch, from KeyAltitude |
+| pub | `relative_altitude` | `Relative AltitudeStamped` | Height above launch, from KeyAltitude |
 | pub | `gimbal_joint_attitude` | `drone_interfaces/AttitudeStamped` | Gimbal attitude (header, {"pitch", "roll", "yaw"}) |
 | pub | `attitude` | `drone_interfaces/AttitudeStamped` | Drone's atttiude (header, {"pitch", "roll", "yaw"}) |
 | sub | `command/stick` | `std_msgs/Float64MultiArray` | [lx, ly, rx, ry] |
 
 Params: `phone_IP: 192.168.50.18`, `tcp_port: 8081`, `udp_port: 8082`, `http_port: 8080`,
-`telemetry publish rate: 20Hz`.
+`telemetry publish rate: Measured 10 Hz FC / 19 Hz gimbal`.
 
 ### camera_streamer camera_decoder
 Job: receive the encoded camera stream (single-client TCP), decode,
@@ -31,7 +31,7 @@ publish frames; broadcast the static camera extrinsic.
 |-----------|-------|------|-------|
 | pub | `camera/image_raw` | `sensor_msgs/Image` | decoded frame |
 | pub | `/tf_static` | `geometry_msgs/TransformStamped` | base->gimbal->camera->optical |
-| sub | `gimbal_joint_attitude` | `std_msgs/String` | Gimbal joint states {"pitch", "roll", "yaw"} |
+| sub | `gimbal_joint_attitude` | `drone_interfaces/AtitudeStamped` | Gimbal joint states {"pitch", "roll", "yaw"} |
 
 Params: `camera_tcp_port: 8900`, `frame_ids: camera_link, camera_optical_frame`.
 
@@ -45,18 +45,18 @@ Job: monocular visual odometry with scale ambiguity.
 | Direction | Topic | Type | Notes |
 |-----------|-------|------|-------|
 | sub | `camera/image_raw` | `sensor_msgs/Image` | |
-| pub | `vo/odom` | `nav_msgs/Odometry` | no metric scale |
+| pub | `vo/pose` | `nav_msgs/PoseStamped` | no metric scale |
 | pub | `localisation_status` | `std_msgs/String` | Tracking state |
 
 Params: `vocabulary: ORBvoc`, `camera calibration: config/camera_calibration.yaml`, `feature settings: <settings>`, `devices: CPU`.
 
 ### localisation ekf_node
-Job: fuse V-SLAM with metric velocity + AGL altitude to resolves scale,
+Job: fuse V-SLAM with metric velocity + relative altitude to resolves scale,
 outputs metric pose; broadcasts dynamic tf.
 
 | Direction | Topic | Type | Notes |
 |-----------|-------|------|-------|
-| sub | `vo/odom` | `nav_msgs/Odometry` | |
+| sub | `vo/pose` | `nav_msgs/PoseStamped` | |
 | sub | `speed_vector` | `geometry_msgs/Vector3Stamped` | metric velocity (scale ref) |
 | sub | `relative_altitude` | `std_msgs/Float64` | vertical metric anchor |
 | sub | `gimbal_joint_attitude` | `drone_interfaces/AttitudeStamped` | Gimbal attitude (header, {"pitch", "roll", "yaw"}) |
@@ -65,7 +65,7 @@ outputs metric pose; broadcasts dynamic tf.
 | pub | `localisation/pose` | `geometry_msgs/PoseWithCovarianceStamped` | source-agnostic pose |
 | pub | `/tf` | `tf2_msgs/TFMessage` | map->odom->base_link |
 
-Params: `covariances`, `scale-init: <scale-init>`, `frame ids: map, odom, base_link`.
+Params: `covariances`, `scale-init: <scale-init>`, `frame ids: odom, base_link`.
 
 ---
 
