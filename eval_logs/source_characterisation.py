@@ -53,29 +53,49 @@ HOVER_MIN_S = 5.0
 
 
 # --------------------------------------------------------------------------- reading
-def read_bag(bagpath):
+def read_bag(bagpath, mocap_bagpath=None):
     """Return dict of topic -> dict(arrays). Telemetry uses header stamps,
-    mocap uses record time."""
+    mocap uses record time.
+
+    mocap_bagpath: optional second bag holding MOCAP_TOPIC, recorded in
+    ROS_DOMAIN_ID 0 at full rate. domain_bridge delivers ~15 Hz with
+    multi-second stalls against ~103 Hz at source, so mocap is recorded
+    separately. Both recorders run on the same host, so record times share one
+    clock and no extra alignment is needed. When given, it REPLACES any mocap
+    found in the main bag.
+    """
     import rosbag2_py
     from rclpy.serialization import deserialize_message
     from rosidl_runtime_py.utilities import get_message
 
-    reader = rosbag2_py.SequentialReader()
-    reader.open(
-        rosbag2_py.StorageOptions(uri=str(bagpath), storage_id=""),
-        rosbag2_py.ConverterOptions("", ""),
-    )
-    types = {t.name: t.type for t in reader.get_all_topics_and_types()}
+    def _drain(uri, wanted, sink):
+        reader = rosbag2_py.SequentialReader()
+        reader.open(
+            rosbag2_py.StorageOptions(uri=str(uri), storage_id=""),
+            rosbag2_py.ConverterOptions("", ""),
+        )
+        types = {t.name: t.type for t in reader.get_all_topics_and_types()}
+        n = 0
+        while reader.has_next():
+            topic, data, t_rec = reader.read_next()
+            if topic not in wanted:
+                continue
+            msg = deserialize_message(data, get_message(types[topic]))
+            sink[topic].append((t_rec * 1e-9, msg))
+            n += 1
+        return n
 
     raw = {k: [] for k in
            (ALT_TOPIC, SPEED_TOPIC, ATT_TOPIC, GIMBAL_TOPIC, MOCAP_TOPIC)}
 
-    while reader.has_next():
-        topic, data, t_rec = reader.read_next()
-        if topic not in raw:
-            continue
-        msg = deserialize_message(data, get_message(types[topic]))
-        raw[topic].append((t_rec * 1e-9, msg))
+    _drain(bagpath, set(raw), raw)
+
+    if mocap_bagpath is not None:
+        n_bridged = len(raw[MOCAP_TOPIC])
+        raw[MOCAP_TOPIC] = []
+        n = _drain(mocap_bagpath, {MOCAP_TOPIC}, raw)
+        print(f"  mocap from {Path(mocap_bagpath).name}: {n} msgs "
+              f"(replacing {n_bridged} bridged)")
 
     out = {}
 
@@ -109,10 +129,23 @@ def read_bag(bagpath):
             p = m.pose.position if hasattr(m, "pose") else m.position
             q = m.pose.orientation if hasattr(m, "pose") else m.orientation
             P.append([p.x, p.y, p.z])
-            Q.append([q.x, q.y, q.z, q.w])
+            # The mocap4r2 driver publishes the CONJUGATE orientation:
+            # R_body_world where ROS convention is R_world_body. Verified on
+            # G2_yaw_reference -- as-published gives a yaw residual whose slope
+            # against DJI yaw is +2.00 with sd 142 deg (the signature of an
+            # inverted yaw sense); conjugating gives slope -0.00, sd 0.63 deg.
+            # Position is unaffected, which is consistent with a quaternion
+            # conjugation bug touching orientation only.
+            Q.append([-q.x, -q.y, -q.z, q.w])
             T.append(tr)                      # RECORD time, see module docstring
-        out["mocap"] = {"t": np.array(T), "p": np.array(P, float),
-                        "q": np.array(Q, float)}
+        # Domain 0 carries two publishers of this topic (the driver and a
+        # zenoh bridge), so some poses arrive twice, microseconds apart.
+        T, P, Q = np.array(T), np.array(P, float), np.array(Q, float)
+        order = np.argsort(T, kind="stable")
+        T, P, Q = T[order], P[order], Q[order]
+        keep = np.concatenate([[True], np.diff(T) > 1e-3])
+        out["mocap"] = {"t": T[keep], "p": P[keep], "q": Q[keep],
+                        "n_duplicates": int((~keep).sum())}
     return out
 
 
@@ -224,7 +257,7 @@ def quant_check(v, q):
 
 
 # --------------------------------------------------------------------------- sync
-def sync_mocap(d, min_corr=0.5):
+def sync_mocap(d, min_corr=0.5, force="altitude"):
     """Estimate and remove the mocap-clock offset. Returns lag (s), 0 if
     no signal in the bag supports a reliable estimate."""
     if "mocap" not in d:
@@ -258,6 +291,11 @@ def sync_mocap(d, min_corr=0.5):
                       np.gradient(ya, 1.0 / fs),
                       np.gradient(yb, 1.0 / fs)))
 
+    if force is not None:
+        forced = [c for c in cands if c[0] == force]
+        if forced:
+            cands = forced
+
     best = (None, float("nan"), -np.inf)
     for label, a, b in cands:
         lag, corr = xcorr_lag(grid, a, b, fs=fs)
@@ -278,6 +316,35 @@ def sync_mocap(d, min_corr=0.5):
     d["_mocap_sync_signal"] = label
     return lag
 
+def vertical_integral_gain(d, win_s=3.0):
+    """K_VEL from integrated DJI vz vs mocap dz. No differentiation of mocap,
+    and a 75 ms delay only affects the window endpoints. Needs no yaw."""
+    if "vel" not in d or "mocap" not in d:
+        return {}
+    t0 = max(d["vel"]["t"][0], d["mocap"]["t"][0])
+    t1 = min(d["vel"]["t"][-1], d["mocap"]["t"][-1])
+    if t1 - t0 < 3 * win_s:
+        return {}
+    grid = np.arange(t0, t1, 1.0 / RESAMPLE_HZ)
+    vz = resample(d["vel"]["t"], d["vel"]["v"][:, 2], grid)      # down-positive
+    z_m = resample(d["mocap"]["t"], d["mocap"]["p"][:, 2], grid)
+
+    n = int(win_s * RESAMPLE_HZ)
+    num, den = [], []
+    for i in range(0, len(grid) - n, n // 2):
+        dz_dji = -np.trapz(vz[i:i + n], grid[i:i + n])          # sign: NED -> up
+        dz_mocap = z_m[i + n - 1] - z_m[i]
+        if abs(dz_mocap) < 0.20:                                 # need real motion
+            continue
+        num.append(dz_dji)
+        den.append(dz_mocap)
+    if len(num) < 4:
+        return {"note": "insufficient vertical displacement"}
+    num, den = np.array(num), np.array(den)
+    g = float(np.sum(num * den) / np.sum(den * den))             # TLS-ish slope
+    return {"K_VEL_integral": g,
+            "K_VEL_integral_n_windows": len(num),
+            "K_VEL_integral_scatter": float(np.std(num / den))}
 
 # --------------------------------------------------------------------------- altitude
 def characterise_altitude(d, out, name):
@@ -288,7 +355,11 @@ def characterise_altitude(d, out, name):
     m = (t >= d["mocap"]["t"][0]) & (t <= d["mocap"]["t"][-1])
     t, z = t[m], z[m]
     z_true = resample(d["mocap"]["t"], d["mocap"]["p"][:, 2], t)
-    z_true = z_true - np.median(z_true[:min(20, len(z_true))])   # takeoff datum
+    grounded = (z == 0.0)
+    if grounded.sum() >= 10:
+        z_true = z_true - np.median(z_true[grounded])
+    else:
+        z_true = z_true - np.median(z_true[:min(20, len(z_true))])
     mt, V = mocap_velocity(d["mocap"]["t"], d["mocap"]["p"])
     vz = resample(mt, V[:, 2], t)
 
@@ -365,6 +436,7 @@ def characterise_altitude(d, out, name):
     fig.suptitle(f"{name} — altitude")
     fig.savefig(out / f"{name}_altitude.png", dpi=110, bbox_inches="tight")
     plt.close(fig)
+    res.update(vertical_integral_gain(d))
     return res
 
 
@@ -395,16 +467,39 @@ def characterise_velocity(d, out, name):
         -s * v_world[:, 0] + c * v_world[:, 1],
         v_world[:, 2]])
 
+    # Mask on the REFERENCE, not on v_dji: selecting on the dependent variable
+    # truncates the regression and biases the slope.
     moving = np.linalg.norm(v_dji, axis=1) > 0.15
     if moving.sum() < 50:
         res["note"] = "insufficient motion"
         return res
 
+    def lsq_trim(ref, mask, passes=2):
+        M, *_ = np.linalg.lstsq(ref[mask], v_dji[mask], rcond=None)
+        for _ in range(passes):
+            e = np.linalg.norm(v_dji - ref @ M, axis=1)
+            thr = 3.0 * np.median(e[mask]) + 1e-9
+            keep = mask & (e < thr)
+            if keep.sum() < 50:
+                break
+            M, *_ = np.linalg.lstsq(ref[keep], v_dji[keep], rcond=None)
+        res["fit_trim_frac"] = float(1.0 - keep.sum() / max(mask.sum(), 1))
+        return M
+
     def fit(ref):
-        M, *_ = np.linalg.lstsq(ref[moving], v_dji[moving], rcond=None)
+        M = lsq_trim(ref, moving)
         pred = ref @ M
-        rms = float(np.sqrt(np.mean((v_dji[moving] - pred[moving]) ** 2)))
-        return M.T, rms
+        return M.T, float(np.sqrt(np.mean((v_dji[moving] - pred[moving]) ** 2)))
+
+    def apply_lag(x, dly, tau):
+        """Delay by a FRACTIONAL number of samples, then one-pole."""
+        y = np.column_stack([onepole(x[:, i], dt, tau) for i in range(3)])
+        if dly > 0:
+            src = np.arange(len(y)) - dly / dt
+            src = np.clip(src, 0, len(y) - 1)
+            y = np.column_stack([np.interp(src, np.arange(len(y)), y[:, i])
+                                 for i in range(3)])
+        return y
 
     M_w, rms_w = fit(v_world)
     M_b, rms_b = fit(v_body)
@@ -413,34 +508,44 @@ def characterise_velocity(d, out, name):
     res["frame"] = "world" if rms_w < rms_b else "body"
     res["frame_confidence"] = float(max(rms_w, rms_b) / (min(rms_w, rms_b) + 1e-12))
     M = M_w if rms_w < rms_b else M_b
+    ref_raw = v_world if res["frame"] == "world" else v_body
+    res["M_naive"] = M.tolist()          # gain WITH the delay still in it
+
+    # --- alternate: delay/tau given M, then M given delay/tau -------------
+    for _ in range(4):
+        ref = ref_raw @ M.T
+        best = None
+        for dly in np.arange(0.0, 0.41, 0.005):        # 5 ms grid
+            for tau in np.arange(0.0, 0.21, 0.005):
+                r = apply_lag(ref, dly, tau)
+                c = float(np.mean((v_dji[moving] - r[moving]) ** 2))
+                if best is None or c < best[0]:
+                    best = (c, dly, tau)
+        _, dly, tau = best
+        ref_lagged_basis = apply_lag(ref_raw, dly, tau)
+        M = lsq_trim(ref_lagged_basis, moving).T
+        M = M.T
+
+    ref_lagged = apply_lag(ref_raw, dly, tau) @ M.T
     res["M"] = M.tolist()
-
-    # Snap to signed permutation for axis_perm / signs.
-    perm, signs = [], []
-    for r in range(3):
-        j = int(np.argmax(np.abs(M[r])))
-        perm.append(j)
-        signs.append(int(np.sign(M[r, j])))
-    res["axis_perm"] = perm
-    res["signs"] = signs
-    res["diag_gains"] = [float(M[r, perm[r]]) for r in range(3)]
-
-    # Lag model: grid search delay + one-pole tau on the resolved reference.
-    ref = (v_world if res["frame"] == "world" else v_body) @ M.T
-    best = None
-    for dly in np.arange(0.0, 0.41, dt):
-        n = int(round(dly / dt))
-        for tau in np.arange(0.0, 0.51, 0.01):
-            r = np.column_stack([onepole(ref[:, i], dt, tau) for i in range(3)])
-            if n:
-                r = np.vstack([np.repeat(r[:1], n, axis=0), r[:-n]])
-            e = v_dji[moving] - r[moving]
-            c = float(np.mean(e ** 2))
-            if best is None or c < best[0]:
-                best = (c, dly, tau, r)
-    _, dly, tau, ref_lagged = best
     res["velocity_delay_s"] = float(dly)
     res["velocity_tau_s"] = float(tau)
+
+    # Convention-free isotropic gain: invariant to any orthogonal factor.
+    Hh = np.array(M)[:2, :2]
+    res["gain_horizontal"] = float(np.sqrt(abs(np.linalg.det(Hh))))
+    res["gain_z"] = float(abs(M[2][2]))
+    res["det_horizontal"] = float(np.linalg.det(Hh))   # <0 => NED/ENU reflection
+
+    perm, signs = [], []
+    for r_ in range(3):
+        j = int(np.argmax(np.abs(M[r_])))
+        perm.append(j)
+        signs.append(int(np.sign(M[r_][j])))
+    res["axis_perm"] = perm
+    res["signs"] = signs
+    res["diag_gains"] = [float(M[r_][perm[r_]]) for r_ in range(3)]
+
     e = v_dji[moving] - ref_lagged[moving]
     res["R_speed_infl"] = [float(np.var(e[:, i])) for i in range(3)]
     res["residual_rms"] = [float(np.std(e[:, i])) for i in range(3)]
@@ -469,8 +574,12 @@ def characterise_attitude(d, out, name):
     if len(t) < 50:
         return {}
 
-    q = np.column_stack([np.interp(t, d["mocap"]["t"], d["mocap"]["q"][:, i])
-                         for i in range(4)])
+    Q = np.asarray(d["mocap"]["q"], dtype=float).copy()
+    flip = np.cumprod(np.where(np.sum(Q[1:] * Q[:-1], axis=1) < 0, -1.0, 1.0))
+    Q[1:] *= flip[:, None]
+    q = np.column_stack([np.interp(t, d["mocap"]["t"], Q[:, i]) for i in range(4)])
+    q /= np.linalg.norm(q, axis=1, keepdims=True)
+
     res = {"rate_hz": effective_rate(t)}
 
     # Constant offset between the mocap rigid-body frame and base_link.
@@ -495,11 +604,104 @@ def characterise_attitude(d, out, name):
     res["yaw_drift_deg"] = float(np.degrees(resid[-20:, 2].mean()
                                             - resid[:20, 2].mean()))
 
-    fig, ax = plt.subplots(3, 1, figsize=(11, 8), sharex=True)
+    def rate_mag(ts, Rs):
+        ts = np.asarray(ts, float)
+        keep = np.concatenate([[True], np.diff(ts) > 1e-3])   # drop duplicate stamps
+        ts = ts[keep]
+        Rs = [Rs[i] for i in np.where(keep)[0]]
+        w = np.zeros(len(ts))
+        for i in range(1, len(ts)):
+            dR = Rs[i - 1].T @ Rs[i]
+            v = 0.5 * np.array([dR[2, 1] - dR[1, 2],
+                                dR[0, 2] - dR[2, 0],
+                                dR[1, 0] - dR[0, 1]])
+            # atan2 form: numerically stable at small angles, unlike arccos
+            ang = np.arctan2(np.linalg.norm(v), (np.trace(dR) - 1.0) / 2.0)
+            w[i] = ang / (ts[i] - ts[i - 1])
+        if len(w) > 1:
+            w[0] = w[1]
+        cap = np.radians(400.0)          # physically impossible above this
+        bad = w > cap
+        if bad.any() and (~bad).sum() > 2:
+            w[bad] = np.interp(ts[bad], ts[~bad], w[~bad])
+        return ts, w
+
+    g2 = np.arange(t[0], t[-1], 1.0 / RESAMPLE_HZ)
+    kk = np.ones(5) / 5
+    td, wd = rate_mag(t, [rpy_to_R(*r) for r in rpy])
+    tm, wm = rate_mag(d["mocap"]["t"], [quat_to_R(qq) for qq in d["mocap"]["q"]])
+    w_d = np.convolve(resample(td, wd, g2), kk, mode="same")
+    w_m = np.convolve(resample(tm, wm, g2), kk, mode="same")
+    lag, corr = xcorr_lag(g2, w_m, w_d, max_lag=0.5)   # positive => DJI is late
+    res["att_delay_s"] = float(lag)
+    res["att_delay_corr"] = float(corr)
+    res["att_rate_max_dps"] = float(np.degrees(np.nanmax(w_m)))
+
+    # ---- sigma_rp vs horizontal acceleration -----------------------------
+    # sigma_rp tracks ACCELERATION, not angular rate: 0.08 deg static,
+    # 0.43 deg hover+yaw at 59 deg/s, 0.59 deg vertical-only, but 2.4-3.8 deg
+    # when translating. That is accelerometer-referenced tilt estimation:
+    # linear acceleration corrupts the gravity vector, giving atan(a/g).
+    # Resample to the grid FIRST, then smooth, then differentiate -- twice.
+    ga = np.arange(t[0], t[-1], 1.0 / RESAMPLE_HZ)
+    p_g = resample(d["mocap"]["t"], d["mocap"]["p"], ga)
+    ks = np.ones(11) / 11.0                       # longer window: 2nd derivative
+    p_g = np.column_stack([np.convolve(p_g[:, i], ks, mode="same")
+                           for i in range(3)])
+    v_g = np.gradient(p_g, 1.0 / RESAMPLE_HZ, axis=0)
+    a_g = np.gradient(v_g, 1.0 / RESAMPLE_HZ, axis=0)
+    a_h = np.linalg.norm(a_g[:, :2], axis=1)
+    edge = 15                                     # drop convolution edges
+    a_h[:edge] = np.nan
+    a_h[-edge:] = np.nan
+
+    a_at = resample(ga, np.nan_to_num(a_h, nan=0.0), t)
+    good = np.isfinite(a_at) & (t > t[0] + 1.0) & (t < t[-1] - 1.0)
+    rp_mag = np.hypot(resid[:, 0], resid[:, 1])   # rad
+
+    if good.sum() > 50:
+        A = np.column_stack([a_at[good], np.ones(good.sum())])
+        slope, icept = np.linalg.lstsq(A, rp_mag[good], rcond=None)[0]
+        res["rp_vs_accel_slope_s2_per_m"] = float(slope)
+        res["rp_vs_accel_intercept_rad"] = float(icept)
+        res["rp_vs_accel_inv_g"] = float(1.0 / 9.81)   # expected slope
+        res["a_horiz_max"] = float(np.nanmax(a_at[good]))
+        res["a_horiz_p95"] = float(np.nanpercentile(a_at[good], 95))
+
+        # Two-tier sigma_rp for the acceleration-scheduled R_att.
+        quiet = good & (a_at < 0.20)
+        dyn = good & (a_at > 0.50)
+        if quiet.sum() > 20:
+            res["sigma_rp_quiet_rad"] = float(np.std(rp_mag[quiet]))
+            res["n_quiet"] = int(quiet.sum())
+        if dyn.sum() > 20:
+            res["sigma_rp_dynamic_rad"] = float(np.std(rp_mag[dyn]))
+            res["n_dynamic"] = int(dyn.sum())
+    else:
+        res["note_accel"] = "insufficient acceleration coverage"
+
+    fig, ax = plt.subplots(4, 1, figsize=(11, 11))
     for i, lab in enumerate(("roll", "pitch", "yaw")):
         ax[i].plot(t - t[0], np.degrees(resid[:, i]), ".", ms=2)
-        ax[i].set_ylabel(f"{lab} err (deg)"); ax[i].grid(alpha=.3)
+        ax[i].set_ylabel(f"{lab} err (deg)")
+        ax[i].grid(alpha=.3)
+        ax[i].sharex(ax[0])
     ax[2].set_xlabel("s")
+
+    if "rp_vs_accel_slope_s2_per_m" in res:
+        ax[3].plot(a_at[good], np.degrees(rp_mag[good]), ".", ms=2, alpha=.4)
+        xs = np.linspace(0, np.nanmax(a_at[good]), 50)
+        ax[3].plot(xs, np.degrees(res["rp_vs_accel_slope_s2_per_m"] * xs
+                                  + res["rp_vs_accel_intercept_rad"]),
+                   "-", lw=1.5, label=f"fit, slope="
+                                      f"{res['rp_vs_accel_slope_s2_per_m']:.4f}")
+        ax[3].plot(xs, np.degrees(xs / 9.81), "--", lw=1.2, label="atan(a/g)")
+        ax[3].set_xlabel("|a_horiz| (m/s^2)")
+        ax[3].set_ylabel("|roll,pitch| resid (deg)")
+        ax[3].legend(); ax[3].grid(alpha=.3)
+    else:
+        ax[3].axis("off")
+
     fig.suptitle(f"{name} — attitude residual vs mocap")
     fig.savefig(out / f"{name}_attitude.png", dpi=110, bbox_inches="tight")
     plt.close(fig)
@@ -533,6 +735,9 @@ def main():
     ap.add_argument("bags", nargs="+")
     ap.add_argument("--out", default="./characterisation_out")
     ap.add_argument("--only", default="alt,vel,att,gimbal")
+    ap.add_argument("--mocap-bag", default=None,
+                    help="explicit mocap bag for ALL bags; default is to look "
+                         "for <bag>_mocap alongside each one")
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -542,8 +747,17 @@ def main():
 
     for bag in args.bags:
         name = Path(bag).name
+        if name.endswith("_mocap"):
+            continue                       # companion bag, paired automatically
         print(f"\n=== {name} ===")
-        d = read_bag(bag)
+
+        mocap_bag = args.mocap_bag
+        if mocap_bag is None:
+            cand = Path(str(bag).rstrip("/") + "_mocap")
+            mocap_bag = str(cand) if cand.exists() else None
+        d = read_bag(bag, mocap_bag)
+        if mocap_bag is None:
+            print("  no paired _mocap bag -- using mocap from the main bag")
         present = [k for k in ("alt", "vel", "att", "gimbal", "mocap") if k in d]
         print("topics:", ", ".join(present))
         if "mocap" not in d:
@@ -551,7 +765,8 @@ def main():
 
         lag = sync_mocap(d)
         r = {"mocap_clock_lag_s": lag,
-             "mocap_sync_corr": d.get("_mocap_corr")}
+             "mocap_sync_corr": d.get("_mocap_corr"),
+             "mocap_sync_signal": d.get("_mocap_sync_signal")}
         if lag:
             print(f"mocap clock offset removed: {lag*1e3:+.0f} ms "
                   f"(corr {d.get('_mocap_corr', 0):.3f})")
