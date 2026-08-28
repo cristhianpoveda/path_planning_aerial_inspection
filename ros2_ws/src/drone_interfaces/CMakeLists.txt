@@ -15,6 +15,8 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(drone_interfaces
   "msg/RelativeAltitudeStamped.msg"
   "msg/AttitudeStamped.msg"
+  "msg/VoStatus.msg"
+  "msg/LocalisationStatus.msg"
   DEPENDENCIES std_msgs # Add packages that above messages depend on, in this case geometry_msgs for Sphere.msg
 )
 

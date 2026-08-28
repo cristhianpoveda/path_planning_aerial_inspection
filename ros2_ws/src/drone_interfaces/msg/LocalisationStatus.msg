@@ -1,0 +1,9 @@
+std_msgs/Header header
+string state
+float64 scale
+float64 sigma_scale
+float64 alt_bias
+float64 sigma_alt_bias
+float64 cov_scale_bias
+bool degraded
+string[] flags
