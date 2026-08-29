@@ -22,6 +22,7 @@ EOF
 *.pdf
 *.png
 TODO
+token
 *.jsonl
 *.npz
 
