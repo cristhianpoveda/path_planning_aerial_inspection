@@ -39,7 +39,7 @@ ros2_ws/
       launch/
         camera_streamer.launch.py
       config/
-        camera_streamer.yaml
+        camera_decoder_node.yaml
       package.xml
       setup.py
 

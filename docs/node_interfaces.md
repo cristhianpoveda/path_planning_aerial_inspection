@@ -18,10 +18,11 @@ Job: bidirectional bridge between the modified WildBridge and ROS over TCP/UDP.
 | pub | `relative_altitude` | `Relative AltitudeStamped` | Height above launch, from KeyAltitude |
 | pub | `gimbal_joint_attitude` | `drone_interfaces/AttitudeStamped` | Gimbal attitude (header, {"pitch", "roll", "yaw"}) |
 | pub | `attitude` | `drone_interfaces/AttitudeStamped` | Drone's atttiude (header, {"pitch", "roll", "yaw"}) |
-| sub | `command/stick` | `std_msgs/Float64MultiArray` | [lx, ly, rx, ry] |
+| sub | `command/stick` | `std_msgs/Float64MultiArray` | [lx, ly, rx, ry], when command_mode=stick |
+| sub | `command/vel` | `geometry_msgs/TwistStamped` | 	body frame (base_link), m/s and rad/s, when command_mode=vel. Header ignored by the node, kept for evaluation |
 
 Params: `phone_IP: 192.168.50.18`, `tcp_port: 8081`, `udp_port: 8082`, `http_port: 8080`,
-`telemetry publish rate: Measured 10 Hz FC / 19 Hz gimbal`.
+`telemetry publish rate: Measured 10 Hz FC / 19 Hz gimbal`, `command_mode: vel`, `vel_max_horizontal: 1.0 m/s`, `v_max_vertical: 0.5 m/s`, `yaw_rate_max: 30°/s`, `sign: define!!`.
 
 ### camera_streamer camera_decoder
 Job: receive the encoded camera stream (single-client TCP), decode,

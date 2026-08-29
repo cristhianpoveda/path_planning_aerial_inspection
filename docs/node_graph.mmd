@@ -53,7 +53,7 @@ flowchart TB
     GOALSRC -->|"goal<br/>to define!!"| TRAJ
     TRAJ -->|"plan/path<br/>nav_msgs/Path"| WPF
     WPF -->|"setpoint<br/>geometry_msgs/PoseStamped"| PC
-    PC -->|"command/stick<br/>std_msgs/Float64MultiArray"| DJI
+    PC -->|"command/vel<br/>geometry_msgs/Twist"| DJI
 
     %% --- evaluation (dev-only) ---
     EKF -->|"localisation/pose<br/>geometry_msgs/PoseWithCovarianceStamped"| CMP
