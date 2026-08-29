@@ -11,7 +11,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Empty, String, Float64MultiArray, Float64, Int32, Bool
 from sensor_msgs.msg import NavSatFix
-from geometry_msgs.msg import Vector3Stamped
+from geometry_msgs.msg import Vector3Stamped, TwistStamped
 from datetime import datetime
 from requests.exceptions import RequestException
 import socket  # Added for UDP
@@ -91,6 +91,44 @@ class DjiNode(Node):
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.get_logger().info(f"UDP Socket ready to target {self.ip_rc}:{self.udp_port}")
 
+        # --- Command mode and velocity limits ---
+        # 'stick'  : [-1, 1] normalised RC deflection  (DJI normal virtual stick)
+        # 'vel'    : body-frame m/s and deg/s          (DJI advanced virtual stick)
+        self.declare_parameter('command_mode', 'stick')
+        self.command_mode = self.get_parameter(
+            'command_mode').get_parameter_value().string_value
+
+        if self.command_mode not in ('stick', 'vel'):
+            self.get_logger().error(
+                f"Invalid command_mode '{self.command_mode}', falling back to 'stick'")
+            self.command_mode = 'stick'
+
+        # Operating limits for the 5 x 4 x 3 m arena. The app clamps again.
+        self.declare_parameter('v_max_horizontal', 1.0)     # m/s
+        self.declare_parameter('v_max_vertical', 0.5)       # m/s
+        self.declare_parameter('yaw_rate_max', 30.0)        # deg/s
+        self.v_max_horizontal = self.get_parameter(
+            'v_max_horizontal').get_parameter_value().double_value
+        self.v_max_vertical = self.get_parameter(
+            'v_max_vertical').get_parameter_value().double_value
+        self.yaw_rate_max = self.get_parameter(
+            'yaw_rate_max').get_parameter_value().double_value
+
+        # Axis signs, resolved in the lab. See the app document, section 8b.
+        self.declare_parameter('sign_vx', 1.0)
+        self.declare_parameter('sign_vy', 1.0)
+        self.declare_parameter('sign_vz', 1.0)
+        self.declare_parameter('sign_yaw', 1.0)
+        self.sign_vx = self.get_parameter('sign_vx').get_parameter_value().double_value
+        self.sign_vy = self.get_parameter('sign_vy').get_parameter_value().double_value
+        self.sign_vz = self.get_parameter('sign_vz').get_parameter_value().double_value
+        self.sign_yaw = self.get_parameter('sign_yaw').get_parameter_value().double_value
+
+        self.get_logger().info(
+            f"Command mode: {self.command_mode} | "
+            f"limits: {self.v_max_horizontal} m/s h, {self.v_max_vertical} m/s v, "
+            f"{self.yaw_rate_max} deg/s yaw")
+
         # Start the telemetry stream (TCP socket on port 8081)
         self.dji_interface.startTelemetryStream()
 
@@ -130,9 +168,19 @@ class DjiNode(Node):
         self.create_subscription(
             Float64, 'command/set_rth_altitude', self.set_rth_altitude_callback, 10)
         
-        # Virtual stick control subscriber (leftX, leftY, rightX, rightY)
-        self.create_subscription(
-            Float64MultiArray, 'command/stick', self.stick_callback, 10)
+        # Control subscriber. Exactly one of the two is created, so a stale
+        # publisher on the other topic can never reach the aircraft.
+        if self.command_mode == 'vel':
+            # Body frame. linear.x forward, linear.y lateral, linear.z up,
+            # angular.z yaw rate in rad/s (converted to deg/s before sending).
+            self.create_subscription(
+                TwistStamped, 'command/vel', self.vel_callback, 10)
+            self.get_logger().info("Subscribed to command/vel (advanced velocity mode)")
+        else:
+            # Virtual stick control subscriber (leftX, leftY, rightX, rightY)
+            self.create_subscription(
+                Float64MultiArray, 'command/stick', self.stick_callback, 10)
+            self.get_logger().info("Subscribed to command/stick (normal stick mode)")
 
         # Subscribers for camera commands
         self.create_subscription(
@@ -388,35 +436,77 @@ class DjiNode(Node):
     #     else:
     #         self.get_logger().warning('Stick command requires 4 values: leftX, leftY, rightX, rightY')
 
+    def _send_udp(self, payload: dict, label: str):
+        """Increment the sequence number and fire one datagram at the app.
+
+        Fire and forget. The app's 200 ms watchdog is what protects the
+        aircraft if this stops, so there is deliberately no retry and no
+        repeater timer here.
+        """
+        self.udp_seq_num += 1
+        payload["seq"] = self.udp_seq_num
+        try:
+            self.udp_sock.sendto(
+                json.dumps(payload).encode('utf-8'),
+                (self.ip_rc, self.udp_port))
+        except Exception as e:
+            self.get_logger().error(f"Failed to send UDP {label} command: {e}")
+
     def stick_callback(self, msg: Float64MultiArray):
         """Virtual stick control. Expected: [leftX, leftY, rightX, rightY] in range [-1, 1]."""
         data = msg.data
-        if len(data) >= 4:
-            leftX, leftY, rightX, rightY = data[:4]
-            
-            # Increment sequence number for the Android Dead-Man's switch validation
-            self.udp_seq_num += 1
-            
-            # Package the payload exactly as the Kotlin parser expects
-            payload = {
-                "seq": self.udp_seq_num,
-                "lx": float(leftX),
-                "ly": float(leftY),
-                "rx": float(rightX),
-                "ry": float(rightY)
-            }
-            
-            # Convert to JSON and encode to bytes
-            json_data = json.dumps(payload).encode('utf-8')
-            
-            # Fire and forget over UDP (No waiting for HTTP responses!)
-            try:
-                self.udp_sock.sendto(json_data, (self.ip_rc, self.udp_port))
-            except Exception as e:
-                self.get_logger().error(f"Failed to send UDP stick command: {e}")
-                
-        else:
-            self.get_logger().warning('Stick command requires 4 values: leftX, leftY, rightX, rightY')
+        if len(data) < 4:
+            self.get_logger().warning(
+                'Stick command requires 4 values: leftX, leftY, rightX, rightY')
+            return
+
+        leftX, leftY, rightX, rightY = data[:4]
+        if not all(np.isfinite(v) for v in (leftX, leftY, rightX, rightY)):
+            self.get_logger().error("Non-finite stick command dropped")
+            return
+
+        self._send_udp({
+            "mode": "stick",
+            "lx": float(np.clip(leftX, -1.0, 1.0)),
+            "ly": float(np.clip(leftY, -1.0, 1.0)),
+            "rx": float(np.clip(rightX, -1.0, 1.0)),
+            "ry": float(np.clip(rightY, -1.0, 1.0)),
+        }, "stick")
+
+    def vel_callback(self, msg: TwistStamped):
+        """Body-frame velocity command for the DJI advanced virtual stick.
+
+        twist.linear.x  forward, m/s     twist.linear.y  lateral, m/s
+        twist.linear.z  up, m/s          twist.angular.z yaw rate, rad/s
+
+        The header is deliberately ignored here. It exists for the evaluation
+        bags, where the controller's own stamp separates control-loop jitter
+        from transport jitter. A staleness check on it would create a second
+        dead-man switch competing with the app's 200 ms watchdog.
+
+        Sent to the app in m/s and deg/s. Axis signs are parameters because the
+        DJI conventions are resolved in flight, not from documentation.
+        """
+        t = msg.twist
+        vx, vy, vz, wz = (t.linear.x, t.linear.y, t.linear.z, t.angular.z)
+
+        if not all(np.isfinite(v) for v in (vx, vy, vz, wz)):
+            self.get_logger().error("Non-finite velocity command dropped")
+            return
+
+        yaw_deg = np.degrees(wz)
+
+        self._send_udp({
+            "mode": "vel",
+            "vx": float(np.clip(self.sign_vx * vx,
+                                -self.v_max_horizontal, self.v_max_horizontal)),
+            "vy": float(np.clip(self.sign_vy * vy,
+                                -self.v_max_horizontal, self.v_max_horizontal)),
+            "vz": float(np.clip(self.sign_vz * vz,
+                                -self.v_max_vertical, self.v_max_vertical)),
+            "yr": float(np.clip(self.sign_yaw * yaw_deg,
+                                -self.yaw_rate_max, self.yaw_rate_max)),
+        }, "velocity")
 
     def start_recording_callback(self, msg):
         self.get_logger().info("Received start recording command.")
