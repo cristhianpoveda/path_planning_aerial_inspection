@@ -15,6 +15,6 @@ def generate_launch_description() -> LaunchDescription:
              namespace=NAMESPACE, name="trajectory_gen_node", output="screen"),
         Node(package="drone_navigation", executable="waypoint_follower_node",
              namespace=NAMESPACE, name="waypoint_follower_node", output="screen"),
-        Node(package="drone_navigation", executable="position_controller_node",
-             namespace=NAMESPACE, name="position_controller_node", output="screen"),
+        Node(package="drone_navigation", executable="position_heading_controller_node",
+             namespace=NAMESPACE, name="position_heading_controller_node", output="screen"),
     ])
