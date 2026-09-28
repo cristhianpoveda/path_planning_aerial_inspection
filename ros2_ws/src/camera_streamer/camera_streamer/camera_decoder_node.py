@@ -35,6 +35,30 @@ class CameraDecoderNode(Node):
         self.declare_parameter("analyzeduration", 0)   # microseconds
         self.declare_parameter("probesize", 32)        # bytes
 
+        self.declare_parameter("thread_type", "SLICE")   # NONE | SLICE | FRAME | AUTO
+        self.declare_parameter("thread_count", 0)        # 0 = let ffmpeg choose
+        self.declare_parameter("grayscale", True)        # slam_node wants gray
+        self.declare_parameter("jpeg_quality", 70)
+        self.declare_parameter("log_timing", False)
+
+        self.declare_parameter("publish_rate_hz", 20.0)  # 0 = every frame
+        rate_hz = self.get_parameter(
+            "publish_rate_hz").get_parameter_value().double_value
+        self.min_period = (1.0 / rate_hz) if rate_hz > 0.0 else 0.0
+        self._t_last_pub = 0.0
+
+        self.thread_type = self.get_parameter("thread_type").value
+        self.thread_count = self.get_parameter(
+            "thread_count").get_parameter_value().integer_value
+        self.grayscale = self.get_parameter(
+            "grayscale").get_parameter_value().bool_value
+        self.jpeg_quality = self.get_parameter(
+            "jpeg_quality").get_parameter_value().integer_value
+        self.log_timing = self.get_parameter(
+            "log_timing").get_parameter_value().bool_value
+        self._tsum = {"decode": 0.0, "convert": 0.0, "encode": 0.0}
+        self._tn = 0
+
         # --- frames + static extrinsics ---
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("gimbal_base_frame", "gimbal_base")
@@ -168,23 +192,77 @@ class CameraDecoderNode(Node):
         }
         container = av.open(url, format="h264", mode="r", options=options)
         stream = container.streams.video[0]
-        stream.thread_type = "NONE"
+        stream.thread_type = self.thread_type
+        if self.thread_count:
+            stream.thread_count = self.thread_count
         self.get_logger().info("connected; decoding")
 
         got_key = False
         try:
+            t_prev = time.perf_counter()
             for frame in container.decode(stream):
                 if not rclpy.ok():
                     break
                 if not got_key:
                     if not frame.key_frame:
-                        continue          # wait for the first keyframe
+                        continue
                     got_key = True
-                img = frame.to_ndarray(format="bgr24")
-                msg = self.bridge.cv2_to_compressed_imgmsg(img)
+
+                t_dec = time.perf_counter()
+
+                # slam_node decodes straight to grayscale, so producing colour
+                # here is work that is immediately discarded.
+                fmt = "gray" if self.grayscale else "bgr24"
+                if not got_key:
+                    if not frame.key_frame:
+                        continue
+                    got_key = True
+
+                # Rate cap. Placed before the conversion and encode so a
+                # dropped frame costs nothing beyond the decode itself.
+                # slam_node tracks at ~26 Hz, so publishing at 40 leaves it
+                # dropping frames at irregular intervals; a fixed 20 Hz gives
+                # uniform inter-frame baselines instead.
+                t_now = time.perf_counter()
+                if self.min_period and (t_now - self._t_last_pub) < self.min_period:
+                    continue
+                self._t_last_pub = t_now
+
+                t_dec = time.perf_counter()
+                img = frame.to_ndarray(format=fmt)
+
+                t_cvt = time.perf_counter()
+
+                ok, buf = cv2.imencode(
+                    ".jpg", img,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality])
+                if not ok:
+                    continue
+
+                t_enc = time.perf_counter()
+
+                msg = CompressedImage()
+                msg.format = "jpeg"
+                msg.data = buf.tobytes()
                 msg.header.stamp = self.get_clock().now().to_msg()
                 msg.header.frame_id = self.optical_frame
                 self.pub.publish(msg)
+
+                if self.log_timing:
+                    self._tsum["decode"] += t_dec - t_prev
+                    self._tsum["convert"] += t_cvt - t_dec
+                    self._tsum["encode"] += t_enc - t_cvt
+                    self._tn += 1
+                    if self._tn >= 100:
+                        d, c, e = (1000 * self._tsum[k] / self._tn
+                                   for k in ("decode", "convert", "encode"))
+                        self.get_logger().info(
+                            f"per frame: decode {d:.1f} ms  convert {c:.1f} ms  "
+                            f"encode {e:.1f} ms  total {d + c + e:.1f} ms "
+                            f"({1000 / max(d + c + e, 1e-6):.1f} Hz ceiling)")
+                        self._tsum = {k: 0.0 for k in self._tsum}
+                        self._tn = 0
+                t_prev = time.perf_counter()
         finally:
             container.close()
 

@@ -22,3 +22,9 @@
     # base_link -> gimbal_base
     mount_translation: [0.105, 0.0, -0.025]     # x, y, z  [m]
     mount_rotation_rpy: [0.0, 0.0, 0.0]    # roll, pitch, yaw  [rad]
+    thread_type: "SLICE"
+    thread_count: 0
+    grayscale: true
+    jpeg_quality: 70
+    log_timing: false
+    publish_rate_hz: 20.0
