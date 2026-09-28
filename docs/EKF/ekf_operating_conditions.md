@@ -3,14 +3,11 @@
 What the filter needs to work, what it cannot do, and the routine that puts it
 in a healthy state before an inspection.
 
-Design and constants: `filter_design.md`. This document does not repeat them.
-
-> **[M]** measured against OptiTrack on the seven `F*` bags.
-> **[?]** uncertain — stated because it matters, not because it is settled.
+Design and constants: `filter_design.md`.
 
 ---
 
-## 1. Measured envelope
+## 1. Measured envelope (pre-rebuild build)
 
 Configuration of §2, RPE over 1 s windows against mocap, per `vo_epoch`
 segment. All seven bags on the current build.
@@ -32,6 +29,36 @@ conditions the filter either refuses to start or reports DEGRADED.
 
 The filter's scale is correct even where position is not: F6 1.023, F6c 1.016.
 The failures in §4.1 are VO input quality, not estimation.
+
+---
+
+## 1.1 Measured envelope, current build
+
+Two closed-loop flights, position loop closed on `localisation/pose`, scored
+against mocap by `flight_analysis.py`. RPE over 1 s windows, **restricted to
+windows carrying ≥ 5 cm of true motion** — see the note below.
+
+| bag | profile | RPE 1 s, scale removed | as it runs | fitted scale | epochs | status |
+|---|---|---|---|---|---|---|
+| C01 | closed-loop steps, 695 s | **7.3 %** (0.028 m) | 6.1 % | 1.044 | **1 / 695 s** | works |
+| C03 | closed-loop steps, 870 s | **12.3 %** (0.051 m) | 11.8 % | 1.008 | **1 / 829 s** | works |
+
+**Headline: one VO epoch for the whole flight, scale correct to within 5 %, and
+2.8–5.1 cm of relative position error over 1 s windows.** Downstream, that
+produced 4–5 cm of true position error at a commanded setpoint
+(`controller_design.md` §4.1).
+
+> **Restrict RPE to moving windows.** [M] Median true displacement per 1 s
+> window was 0.010 m (C03) and 0.009 m (C01); only 14 % and 10 % of windows
+> carried ≥ 5 cm. Unrestricted, the same computation reads 33.9 % and 25.1 %,
+> which measures the noise floor against a 1 cm denominator.
+> `flight_analysis.py` prints both; quote `RPEm%` and `runsm%`.
+
+**What was not observed on these two flights:** no VO map rebuild, no camera
+freeze over 0.5 s (C03; C01 did not record the camera topic, but its `vo/pose`
+gaps stayed under 0.29 s), no `S_CLAMPED`, no scale excursion. The map-churn and
+under-translation failures of §4.1 remain the known boundary; these flights did
+not approach it.
 
 ---
 
@@ -62,6 +89,12 @@ Everything else comes from `EkfParams` defaults; the ones that matter are in
 | `K_VEL` | 0.87 | [M] two independent routes, 0.5 % apart. Was 0.91 |
 
 [?] `config/ekf/params.yaml` is loaded before these overrides and has not been checked against them. It does not contain any of the filter tuning parameters. All of them are passed by the launch file.
+
+**[M] C01 and C03 flew the launch-file defaults**, confirmed from the bags: the
+`vo/pose` stamp minus `localisation/pose` stamp is exactly 0.400 s on 100 % and
+99.9 % of frames. Two of those defaults are now known to be off, and neither has
+been changed (`filter_design.md` §13): `VO_DELAY 0.40` under-subtracts by
+40–100 ms, and `K_VEL 0.87` reads high for the flown speed range.
 
 For bag replay add `use_sim_time:=true` and play with `--clock`. For analysis
 add `innovation_log:=<path>.csv`, and record `/drone_1/localisation/pose` if
@@ -121,11 +154,6 @@ constant offset. F3_01 has no segment long enough to evaluate at all.
 > reduced by directional jitter. Not resolved; it does not change the
 > conclusion.
 
-**Avoid:** slow translation parallel to a near, flat surface; pure hover; pure
-vertical motion; rotation without translation; any profile that drives frequent
-map rebuilds. **Log the `vo_epoch` rate** — more than about one rebuild per
-30 s means the filter cannot converge between them.
-
 ### 4.2 Scale is unobservable without transit
 
 `s` is observed only by the velocity update, only above `V_LOW`. [M] Below it
@@ -139,19 +167,33 @@ Nothing observes horizontal position, so `P_xx` and `P_yy` grow monotonically
 and absolute error grows without bound. **Evaluate and gate on RPE over short
 windows, never on ATE or `tr(P_pp)`.**
 
-### 4.4 Published orientation yaw is not trustworthy
+### 4.4 Published orientation yaw — FIXED
 
-[M] The attitude yaw residual has mean −22.8° and sd 28.0°, against roll and
-pitch residuals of 0.30°/0.66° and 0.21°/0.80° which are correctly sized. Since
-DJI attitude yaw tracks mocap to 0.19°, the error is in the VO chain. Position
-is demonstrably unaffected (§1). **A consumer needing pointing direction should
-use DJI attitude yaw directly, not the published orientation.**
+The pre-rebuild defect (yaw residual mean −22.8°, sd 28.0°) was a **sign error
+in the attitude update**, inherited from `sign_yaw = +1.0`. After the fix,
+attitude rejection fell from ~99 % to a handful per flight, and [M] the
+published orientation yaw against mocap has **sd 1.06° (C03) and 0.47° (C01)**
+over the whole flight. Both a controller and a viewpoint planner can use it,
+with a per-session constant offset — measured −39.0° and −49.5° on these two
+sessions. **The offset is per session and must not be inherited.**
 
 ### 4.5 A dead link looks like a stationary aircraft
 
 Telemetry is deduplicated at source, so `TRANSPORT_GAP` does not fire reliably.
 Until `dji_node` emits a fixed-rate heartbeat, comms loss is detected only by
 the phone-side watchdog.
+
+[M] On the current build the flag does fire — 4 times (C03) and 13 times (C01) —
+alongside telemetry gaps of up to 1.65 s and 1.75 s visible in the bag. That it
+fires does not make it reliable: the mechanism that hides a dead link is
+unchanged.
+
+### 4.6 [?] `vo_discont` fires without a map rebuild
+
+[M] 633 flags (C03) and 322 (C01) while `vo_epoch` never changed. These are
+increment-builder rejections inside a healthy map, not rebuilds, and they are
+what put the filter into DEGRADED for 4.6 % and 2.9 % of the flight. Not
+attributed to a specific gate; the innovation log would say which.
 
 ---
 
@@ -178,27 +220,29 @@ the phone-side watchdog.
 the node currently emits are `SIGMA_S_MAX`, `vo_discont=<n>`, `TRANSPORT_GAP`
 (unreliable, §4.5) and `VO_GAP`.
 
-> **[?] `S_CLAMPED` is not implemented.** `s` at its 1e-3 floor freezes
-> position by construction (`filter_design.md` §6.5) and is not reported.
-> `S_STEP_MAX` has made it rare — [M] `s_clamp = 0` on all seven bags — but a
-> consumer cannot currently detect it. One line in `_publish_status`:
-> `if x.s <= 1.01e-3: flags.append("S_CLAMPED")`.
+[M] On C01 and C03 the routine worked as written: both initialised and held one
+epoch for the whole flight, with `σ_s/s` at 0.031–0.035, well inside
+`SIGMA_S_OK`. Step 6 never triggered — there were no rebuilds to react to.
+
+**Operational note, not a filter matter.** [M] `setpoint_cmd.py` publishes only
+while it runs, and `setpoint_timeout` is 5 s, so the gaps between runs (up to
+44.7 s on C03) gate the controller off and leave the aircraft on DJI's own
+position hold. On C03 the setpoint was stale for 51 % of hold time and only 3 of
+19 holds were closed-loop throughout. Keep the publisher running for any hold
+that is meant to be evaluated.
 
 ---
 
-## 6. What the consumer should read
+## 6. Open questions that bear on operation
 
-| field | use |
-|---|---|
-| `pose.position` | valid within the envelope above |
-| `pose.covariance` [0:3,0:3] | grows without bound in x, y — see §4.3 |
-| `sigma_scale / scale` | scale confidence; gate readiness on this |
-| `state`, `degraded`, `flags` | `state` is exactly `"OK"` or `"DEGRADED"` and carries no more information than `degraded`. The **flags** say why |
-| `pose.orientation` yaw | **do not trust** — see §4.4 |
-
----
-
-## 7. Open questions that bear on operation
+- **[?] `VO_DELAY` is under-subtracted at 0.40 by 40–100 ms**, per-flight,
+  measured three ways on C01 and C03 (`filter_design.md` §4.1). Every published
+  pose stamp is early by that much: 1–3 cm at inspection speed, against 4–5 cm
+  of measured position error.
+- **[?] Replay does not reproduce live behaviour** (`filter_design.md` §12.7).
+  A replay of C01 at its own parameters gave fitted scale 1.437 and 1920
+  `SIGMA_S_MAX` flags where the live flight had none. Any parameter chosen
+  offline needs a live flight to confirm.
 
 - **[?] `psi_v` — the yaw offset between DJI velocity and the attitude-seeded
   nav frame — is per-flight**, measured 9.7° to 152.6° across five bags. It is

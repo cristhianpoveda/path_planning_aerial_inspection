@@ -5,9 +5,6 @@ config:
 
 flowchart TB
 
-    %% DEFINE GOAL SOURCE
-    GOALSRC["Goal source"]
-
     %% BRIDGE service
     subgraph BRIDGE["service: bridge"]
         DJI["dji_node"]
@@ -22,7 +19,7 @@ flowchart TB
 
     %% NAVIGATION service
     subgraph NAV["service: navigation"]
-        TRAJ["trajectory_gen (stub)"]
+        PLAN["planner (offline solve + trajectory publisher)"]
         WPF["waypoint_follower"]
         PC["position_heading_controller"]
     end
@@ -48,10 +45,10 @@ flowchart TB
     %% --- localisation internal + output ---
     SLAM -->|"vo/pose (no-scale)<br/>geometry_msgs/PoseWithCovarianceStamped"| EKF
     EKF -->|"localisation/pose<br/>geometry_msgs/PoseWithCovarianceStamped"| PC
+    EKF -->|"localisation/status<br/>drone_interfaces/LocalisationStatus"| PLAN
 
     %% --- navigation chain ---
-    GOALSRC -->|"goal<br/>to define!!"| TRAJ
-    TRAJ -->|"plan/path<br/>nav_msgs/Path"| WPF
+    PLAN -->|"trajectory<br/>trajectory_msgs/MultiDOFJointTrajectory"| WPF
     WPF -->|"setpoint<br/>geometry_msgs/PoseStamped"| PC
     PC -->|"command/vel<br/>geometry_msgs/Twist"| DJI
 
@@ -69,5 +66,4 @@ flowchart TB
     style LOC fill:#eef,stroke:#447,color:#222
     style NAV fill:#fef,stroke:#747,color:#222
     style EVAL fill:#ffe,stroke:#774,color:#222,stroke-dasharray:4 3
-    style GOALSRC fill:#f7f7f7,stroke:#999,color:#222,stroke-dasharray:4 3
     style TF fill:#fff,stroke:#333,color:#222
