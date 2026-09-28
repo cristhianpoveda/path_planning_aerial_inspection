@@ -72,15 +72,6 @@ def ned_to_enu(v):
     """[M] DJI velocity is NED, magnetic-north referenced. The mapping to the
     ENU nav frame is (x, y, z) -> (y, x, -z), confirmed on every bag by
     axis_perm [1,0,2] with signs [+,+,-].
-
-    Note the FULL 3x3 map is a proper rotation (det = +1) -- both NED and ENU
-    are right-handed. What is a reflection is its HORIZONTAL 2x2 block,
-    det = -1, which is why the fitted det_horizontal is negative on every bag.
-    The two facts are consistent: the x-y swap contributes -1 and the z flip
-    another -1.
-
-    The residual yaw between magnetic north and the room is NOT removed here;
-    it is dtheta_z, estimated by the filter (filter_design.md 2).
     """
     v = np.asarray(v, float).reshape(3)
     return np.array([v[1], v[0], -v[2]])
@@ -88,13 +79,6 @@ def ned_to_enu(v):
 
 def sigma_rp(params, a_h):
     """Acceleration-scheduled roll/pitch noise (filter_design.md 5.1).
-
-    A quadrotor accelerates by tilting, so the specific force stays along the
-    thrust axis and a gravity-referenced tilt estimate under-reports by close
-    to the whole tilt angle. Measured slope 0.098 s^2/m against 1/g = 0.102.
-
-    a_h must come from differentiated DJI velocity, NEVER from DJI's own tilt:
-    that reads near zero exactly when the error is largest.
     """
     return float(np.hypot(params.sigma_rp0, params.accel_slope * float(a_h)))
 
@@ -161,21 +145,8 @@ class EkfCore:
         self.x = state if state is not None else State(params)
         self.n_rejected = {k: 0 for k in Kind}
         self.n_s_clamped = 0
-        # Velocity rejections have three distinct causes that n_rejected
-        # lumps together. They mean different things: V_MIN is by design and
-        # unbiased, NIS is outlier rejection, and a missing covering increment
-        # is a coverage problem that may correlate with speed.
         self.n_vel_reason = {"below_V_MIN": 0, "NIS": 0, "applied": 0}
-        # Reference scale for R_vo. R MUST NOT depend on the state being
-        # estimated: with R_vo proportional to s^2, a downward correction
-        # shrinks R, which raises the gain, which amplifies the next downward
-        # correction. s walked 3.61 -> 1.87 on F9_02 while sigma_s shrank.
         self.s_ref = float(self.x.s)
-        # [M] DJI attitude yaw and DJI velocity NED use DIFFERENT yaw datums:
-        # measured 51.84 deg +- 3.81 on F9_02, constant in time (fitted slope
-        # +0.013 against bearing). filter_design.md gives the filter one nav
-        # frame, so no single R_n_v satisfies both updates and the tighter R
-        # wins. This is that offset, estimated at init and held.
         self.psi_v = 0.0
         self.n_s_limited = 0
 
@@ -213,11 +184,11 @@ class EkfCore:
         return F
 
     def dead_reckon(self, v_n, dt):
-        """Propagate on DJI velocity when VO is unavailable (6).
+        """Propagate on DJI velocity when VO is unavailable.
 
         v_n must already be in the nav frame and K_VEL-corrected. Q_p is
         inflated hard: at inspection speed the velocity being integrated is
-        itself below V_MIN and unreliable (5.3).
+        itself below V_MIN and unreliable.
         """
         self.x.p = self.x.p + np.asarray(v_n, float) * dt
         Q = np.zeros((NX, NX))
@@ -260,36 +231,16 @@ class EkfCore:
         PHt = self.x.P @ H.T
         K = _spd_solve(S, PHt.T).T                  # K = P H^T S^-1
         if kind is not Kind.VELOCITY:
-            # Only VELOCITY observes `s`. Altitude and attitude must NOT pin
-            # it. Their H does not touch `s`, but the propagation term
-            # F[IDX_P, IDX_S] = u builds a p_z-s cross-covariance and the gain
-            # then moves `s` through it -- entangled with `b`, which is
-            # exactly why filter_design.md 12 calls velocity the primary scale
-            # cue. Attitude leaks the same way via P_s_theta. Measured on
-            # F9_02: cov_s_b climbed 1e-5 -> 2.9e-3 and `s` slid 3.61 -> 3.19
-            # over 75 s of inspection-speed flight, while the velocity update
-            # was correctly gated out by V_LOW. Joseph form is valid for ANY
-            # gain, so zeroing this row keeps P symmetric and PSD.
             K[IDX_S, :] = 0.0
         dx = K @ y
 
         if kind is Kind.VELOCITY and abs(dx[IDX_S]) > self.p.S_STEP_MAX * self.x.s:
-            # One update may not rewrite `s`. [M] On F6, two updates 100 ms
-            # apart moved `s` 2.778 -> 1.032 -> 0.247 and then to the 1e-3
-            # clamp, freezing position for 23 s of a 43 s flight. Scale is a
-            # per-flight constant estimated from many samples (7); a single
-            # innovation carrying that much authority means P_ss is wide and
-            # the sample is an outlier, not that the scale changed.
             dx = dx.copy()
             dx[IDX_S] = np.sign(dx[IDX_S]) * self.p.S_STEP_MAX * self.x.s
             self.n_s_limited += 1
 
         self.x.p = self.x.p + dx[IDX_P]
         self.x.s = float(self.x.s + dx[IDX_S])
-        # `s` is a scale factor: negative flips the direction of every
-        # propagated increment. Observed at s = -0.9998 on F9_02. Counted
-        # separately -- the update was APPLIED then clamped, not rejected,
-        # and any update can move s through cross-covariance.
         if self.x.s < 1e-3:
             self.x.s = 1e-3
             self.n_s_clamped += 1
@@ -297,9 +248,6 @@ class EkfCore:
 
         IKH = np.eye(NX) - K @ H
         self.x.P = symmetrise(IKH @ self.x.P @ IKH.T + K @ R @ K.T)
-
-        # Reset AFTER every update, not once per packet: this is what keeps
-        # dtheta == 0 at every linearisation point (filter_design.md 1).
         self.reset_error_state(dx[IDX_TH])
         if kind is Kind.VELOCITY:
             self.n_vel_reason["applied"] += 1
@@ -333,9 +281,6 @@ class EkfCore:
     # ---------------------------------------------------------------- 5.2
     def update_altitude(self, z_alt, vz=0.0, t=0.0):
         """h(x) = p_z + b. Height above takeoff, terrain-blind.
-
-        [M] The gain is unity; the direction-dependent k correction inherited
-        from the old altitude_agl key does not apply to KeyAltitude.
         """
         H = np.zeros((1, NX))
         H[0, 2] = 1.0
@@ -356,16 +301,6 @@ class EkfCore:
 
     def update_velocity(self, v_enu, inc, omega_yaw=0.0, t=0.0):
         """Observes s along u_w and dtheta_z perpendicular to it.
-
-        v_enu is the ENU-converted DJI velocity, NOT yet K_VEL-corrected.
-        The correction is applied here together with its covariance, because
-        dividing a measurement without dividing its covariance misstates R
-        (filter_design.md 12).
-
-        [M] LOW-SPEED GATE. gain_horizontal falls 0.93 -> 0.82 -> 0.77 as speed
-        drops from 1.0 m/s to hover, while gain_z holds: the 0.1 m/s quantum
-        acts as a dead zone. This is the inspection regime, so `s` is refined
-        on transits and held through passes.
         """
         p = self.p
         v_enu = np.asarray(v_enu, float).reshape(3)
@@ -380,13 +315,6 @@ class EkfCore:
 
         h, u_w = self.velocity_prediction(inc)
         H = np.zeros((3, NX))
-        # Both sides must carry speed information. V_LOW gates the
-        # MEASUREMENT; this gates the PREDICTION. [M] On F6 the VO increment
-        # was near zero (87 % of |h| below 0.02 m/s) while DJI occasionally
-        # read 0.3-0.4 m/s, so the innovation was the whole measurement and
-        # K_s = P_ss*u_w*y/S drove `s` by ~0.5 per update. `s` hit the 1e-3
-        # clamp at t=5 s and stayed there for 23 s of a 43 s flight, freezing
-        # position: measured |dp_est|/|dp_gt| = 0.003 over 1 s windows.
         if (p.estimate_scale > 0.5 and speed >= p.V_LOW
                 and float(np.linalg.norm(u_w)) >= p.V_VO_MIN):
             H[:, IDX_S] = u_w
@@ -398,21 +326,11 @@ class EkfCore:
             base = base * p.V_INFL
             note = "low-speed inflated"
         if abs(float(omega_yaw)) > p.OMEGA_GATE:
-            # omega_b x r_imu is dropped, not modelled: the residual is lateral
-            # and aliases onto dtheta_z rather than averaging out (5.3).
             base = base + np.eye(3) * p.R_speed_rot
             note = (note + " yaw-rate inflated").strip()
 
         z = v_enu / p.K_VEL
         R = base / (p.K_VEL ** 2)
-        # The prediction h = s*u_w is built from the VO increment, which is a
-        # MEASURED quantity with noise Sigma_v -- but that noise enters only Q,
-        # never S, so the update treats the increment as exact. Scaled by
-        # s ~ 3.5 and divided by dt ~ 0.03 it is LARGER than R_speed itself:
-        # 0.11 m/s against 0.057. Added on the prediction side, so it is not
-        # divided by K_VEL and not multiplied by V_INFL.
-        # s_ref, not the live s, for the same reason R_vo uses it: R must not
-        # depend on the state being estimated.
         Rn = self.x.R_nv
         R = R + (self.s_ref ** 2) * (Rn @ inc.Sigma_v @ Rn.T) / (inc.dt ** 2)
         return self._apply_update(Kind.VELOCITY, z - h, H, R,

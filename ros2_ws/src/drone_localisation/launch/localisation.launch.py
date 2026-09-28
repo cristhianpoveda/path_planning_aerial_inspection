@@ -19,6 +19,7 @@ def generate_launch_description() -> LaunchDescription:
      q_s = DeclareLaunchArgument('q_s', default_value='1e-4')
      T_HOLD = DeclareLaunchArgument('T_HOLD', default_value='0.0')
      K_VEL = DeclareLaunchArgument('K_VEL', default_value='0.87')
+     VO_DELAY = DeclareLaunchArgument('VO_DELAY', default_value='0.40')
      init_dump = DeclareLaunchArgument('init_dump', default_value='')
 
      ekf_node = Node(
@@ -41,6 +42,8 @@ def generate_launch_description() -> LaunchDescription:
                     LaunchConfiguration('T_HOLD'), value_type=float),
                'K_VEL': ParameterValue(
                     LaunchConfiguration('K_VEL'), value_type=float),
+               'VO_DELAY': ParameterValue(
+                    LaunchConfiguration('VO_DELAY'), value_type=float),
                'init_dump': LaunchConfiguration('init_dump'),
           }],
           output='screen',
@@ -61,4 +64,4 @@ def generate_launch_description() -> LaunchDescription:
              output="screen",
          )
 
-     return LaunchDescription([inovation_log, use_sim_true, estimate_scale, sigma_yaw, R_speed_h, q_s, T_HOLD, K_VEL, init_dump, ekf_node, map_odom])
+     return LaunchDescription([inovation_log, use_sim_true, estimate_scale, sigma_yaw, R_speed_h, q_s, T_HOLD, K_VEL, VO_DELAY, init_dump, ekf_node, map_odom])

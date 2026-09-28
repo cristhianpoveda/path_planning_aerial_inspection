@@ -77,10 +77,6 @@ class Event:
 # ============================================================ gimbal buffer
 class AttitudeBuffer:
     """19 Hz gimbal attitude, SLERPed to arbitrary times.
-
-    filter_design.md 4.1 step 4: true interpolation, no ZOH fallback. The
-    gimbal runs faster than the camera, so any image time is bracketed within
-    <= 53 ms and interpolation is always available in normal operation.
     """
 
     def __init__(self, maxlen=4000):
@@ -158,15 +154,6 @@ class AccelEstimator:
 # =============================================================== event queue
 class EventQueue:
     """Stamp-ordered telemetry queue with per-topic value dedupe.
-
-    Dedupe rationale (filter_design.md 5.0): every DJI source is fully
-    quantised. In hover altitude repeats one 0.1 m bin ~10x/s; treating those
-    as independent samples shrinks sigma_pz by sqrt(N) and parks p_z on the bin
-    centre. dji_node dedupes at PACKET level, but pktTMonoNs advances on
-    ATTITUDE change, so a fresh packet can still carry an unchanged altitude.
-
-    R_alt and R_speed are unaffected: both were fitted as per-sample residual
-    variance, which does not depend on how many samples are used.
     """
 
     def __init__(self, params):
@@ -180,9 +167,6 @@ class EventQueue:
 
     def push(self, kind, t_raw, value):
         value = np.atleast_1d(np.asarray(value, float))
-        # Velocity is a PURE DELAY, so relabel rather than filter. [M] the
-        # delay is ~10 ms, small enough to be near-irrelevant, but the
-        # mechanism costs nothing and NEES may prefer a non-zero value.
         t = t_raw - self.p.VEL_DELAY if kind == VELOCITY else t_raw
 
         if t <= self._t_processed:
@@ -219,7 +203,7 @@ class EventQueue:
         return len(self._q)
 
 
-# ========================================================= increment builder
+# Increment builder
 @dataclass
 class Context:
     """What the builder needs from the core and from telemetry."""
@@ -269,8 +253,7 @@ class IncrementBuilder:
 
         # ---- 2. tracking state ------------------------------------------
         if not status.pose_valid:
-            # On loss, clear the anchor entirely: the next pose may belong to
-            # a different map (filter_design.md 4.1 step 3).
+            # On loss, clear the anchor entirely: the next pose may belong to a different map
             self._anchor = None
             if not self._ever_ready and status.tracking_state in _UNINIT:
                 return None, Flags.NOT_READY
@@ -309,8 +292,6 @@ class IncrementBuilder:
             t_prev, R_prev = self._last_dji
             if abs(t_prev - t0) < p.NOMINAL_DT:
                 dR_dji = R_prev.T @ ctx.R_n_b_dji
-                # VO relative rotation is a CAMERA rotation; the gimbal makes
-                # camera and body rotation differ, so compare loosely.
                 if abs(so3.angle(dR_c) - so3.angle(dR_dji)) > p.GATE_R:
                     self._anchor = (t, pose)
                     return self._discont(Flags.VO_DISCONTINUITY | Flags.GATE_R_FAIL)
@@ -335,8 +316,6 @@ class IncrementBuilder:
 
         self._anchor = (t, pose)
         if ctx.v_dji_mag > 0.3:
-            # s implied by THIS increment alone, from DJI velocity. Should
-            # equal check_scale's per-increment value (median 3.91 on F9_02).
             s_implied = (ctx.v_dji_mag / p.K_VEL) / (float(np.linalg.norm(dp_v)) / dt)
             self.dbg.append((t, dt, float(np.linalg.norm(dp_v)),
                              ctx.v_dji_mag, ctx.s_hat, ctx.sigma_s, s_implied))
@@ -348,15 +327,7 @@ class Scheduler:
     """VO-clocked drive loop.
 
     Arrival order is not stamp order: camera frames are stamped ~200 ms in the
-    past (VIDEO_LATENCY) while telemetry is near-live, so telemetry for time T
-    is in hand well before the VO increment covering T. Processing is therefore
-    driven by VO: when the increment for (t0, t1] is complete, propagate to t1
-    and drain every telemetry event with an effective stamp in that window, in
-    stamp order.
-
-    That gives determinism without a fixed lag: given the same SET of messages
-    the processing order is identical regardless of arrival order, which is the
-    requirement in filter_design.md 10.
+    past (VIDEO_LATENCY) while telemetry is near-live.
     """
 
     def __init__(self, params, core):
@@ -367,10 +338,6 @@ class Scheduler:
         self.builder = IncrementBuilder(params, self.att)
         self.accel = AccelEstimator(params.ACC_SMOOTH_S)
         self.innovations = []
-        # Velocity must pair with the increment whose interval CONTAINS its
-        # effective stamp (filter_design.md 5.3), not merely the newest one.
-        # Pairing against the newest let a stale increment through whenever a
-        # DT_FAIL intervened -- 179 of them on F9_02 -- and `s` collapsed.
         self._last_inc = None
         self._inc_t0 = None          # start of _last_inc's interval
         self._last_pose = None
@@ -381,10 +348,6 @@ class Scheduler:
         self._saw_uninit_since_epoch = False
         self.ready = False
         self.on_processed = None
-        # VO stamps are decode_time - VIDEO_LATENCY, i.e. deliberately in the
-        # past, while gimbal stamps are near-live. If VO trails the newest
-        # gimbal sample the buffer must be long enough to still hold the
-        # bracketing pair; if it LEADS, no buffer length helps.
         self._lag_min = float("inf")
         self._lag_max = float("-inf")
         self._pending = deque()
@@ -410,11 +373,7 @@ class Scheduler:
         """Defer until the gimbal buffer brackets t.
 
         [M] VO stamps run from -0.245 s to +0.160 s relative to the newest
-        gimbal sample. The negative side is VIDEO_LATENCY and a long buffer
-        covers it; the positive side is arrival order between two
-        subscriptions, and no buffer length helps -- the sample simply has not
-        arrived yet. Holding the frame costs one gimbal period (~72 ms) and
-        preserves 4.1 step 4's "no ZOH fallback".
+        gimbal sample.
         """
         t = t - self.p.VO_DELAY
         if len(self._pending) > 100:
@@ -456,8 +415,6 @@ class Scheduler:
             self._inc_t0 = inc.t - inc.dt
             self.ready = True
         elif self.ready and (Flags.VO_LOST in flags or inc is None):
-            # Propagation gap, not a rejected measurement: dead-reckon on DJI
-            # velocity (filter_design.md 6). K_VEL-corrected, nav frame.
             if self._t_last_vo is not None and t > self._t_last_vo:
                 self.core.dead_reckon(self._last_v_enu / self.p.K_VEL,
                                       t - self._t_last_vo)
@@ -481,9 +438,6 @@ class Scheduler:
             if R_b_c is None:
                 return
             self._last_R_dji = so3.rpy_to_R(*ev.value)
-            # R_v_c at the VO tick, not at ev.t: the VO pose is only published
-            # at frame times. At 10 Hz the error over one interval is small,
-            # and 5.1 already accepts a 25 ms attitude/velocity skew.
             inn = core.update_attitude(self._last_R_dji, pose.R, R_b_c,
                                        a_h=self.accel.value(), t=ev.t)
             self.innovations.append(inn)
@@ -511,24 +465,9 @@ class Scheduler:
     def _apply_reset_policy(self):
         """Sim(3) correction vs map rebuild, distinguished from data the EKF
         already has (filter_design.md 6.1).
-
-        Monocular loop closure and merge use Sim(3) with FREE SCALE, so a
-        correction can rescale the map even with the state at OK -- hence
-        inflating P_ss rather than trusting the mean. A rebuild replaces the
-        frame and scale outright.
-
-        p and b survive both: they live in the nav frame and are unaffected by
-        anything VO does.
         """
         x = self.core.x
         if self._saw_uninit_since_epoch:
-            # NOT P0_scale. [M] On F9_02 the rebuilt map reproduced the old
-            # map's scale (implied truth 3.85 vs 3.79), so `s` is uncertain,
-            # not unknown. At sigma_s/s = 28% the propagation term
-            # F[IDX_P, IDX_S] = u builds cross-covariance fast, and the
-            # ALTITUDE update then drags `s` through it: measured 3.61 -> 2.29
-            # over 70 s with cov_s_b growing 1e-5 -> 1e-2, while the velocity
-            # update was correctly blocked by the V_LOW gate.
             x.P[3, 3] = min(x.P[3, 3] * 4.0, (0.15 * max(x.s, 1e-3)) ** 2)
             x.P[5, 5] = self.p.P0_theta_xy
             x.P[6, 6] = self.p.P0_theta_xy
@@ -541,19 +480,10 @@ class Scheduler:
             self._saw_uninit_since_epoch = False
             self.needs_reinit = True
         else:
-            # Same cap as the rebuild branch. [M] Uncapped, this fired at
-            # t=85 on F9_02 and took sigma_s from 0.12 to 0.48 (13% relative),
-            # which re-opened the p_z-s cross-covariance: cov_s_b climbed to
-            # 2.9e-3 and altitude dragged `s` from 3.61 to 3.19 over 75 s.
-            # P0_scale is an INIT prior, not a mid-flight one.
             x.P[3, 3] = min(x.P[3, 3] * 4.0, (0.15 * max(x.s, 1e-3)) ** 2)
             x.P[5, 5] = min(x.P[5, 5] * 4.0, self.p.P0_theta_xy)
             x.P[6, 6] = min(x.P[6, 6] * 4.0, self.p.P0_theta_xy)
             x.P[7, 7] = min(x.P[7, 7] * 4.0, self.p.P0_theta_z)
-            # Sim(3) loop closure uses FREE SCALE in monocular, so `s` can be
-            # wrong by the correction factor even with the state at OK.
-            # Inflating P_ss is not enough on its own -- with no motion there
-            # is nothing to shrink it back. Ask for a re-measure too.
             self.needs_reinit = True
 
     # ---- diagnostics -----------------------------------------------------

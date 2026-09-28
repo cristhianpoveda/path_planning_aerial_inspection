@@ -100,8 +100,6 @@ def trajectory(profile, t):
         return p, yaw
 
     if profile == "mixed":
-        # transit then inspect: the regime filter_design.md 7 says `s` is
-        # estimated on transits and HELD through passes
         p, yaw = trajectory("box", t)
         slow = t > t[-1] * 0.5
         p[slow] = p[slow][0] + np.column_stack(
@@ -163,8 +161,6 @@ def simulate(profile, duration=60.0, cfg=None):
                         Sigma_v=np.eye(3) * cfg.vo_noise ** 2, t=t[k])
 
         # ---- attitude: the measured under-reporting mechanism ----
-        # DJI sees the specific force, which stays along the thrust axis, so
-        # its tilt estimate is short by ~|a_h|/g about the perpendicular axis.
         err = np.array([0.0, 0.0, 1.0])
         e_vec = np.cross(err, np.array([a[k, 0], a[k, 1], 0.0])) / G
         noise = np.array([rng.normal(scale=cfg.sigma_rp0),
@@ -201,14 +197,6 @@ def init_core(core, step0, s_guess=1.0, p0=None):
     R_bar_n_v = R_n_b^dji(t0) @ R_b_c(t0) @ R_v_c(t0)^-1 -- this is what
     gravity-aligns the nav frame. Note it inherits the attitude error at t0,
     which is exactly what dtheta then has to clean up.
-
-    p0: `n` has its origin at takeoff, but these scenarios start already
-    airborne, so the filter is handed the true starting position. Getting this
-    wrong makes the very first altitude residual ~1.5 m, which trips the NIS
-    gate and then NEVER recovers -- p_z is only observed by altitude, so a
-    rejected altitude stream is self-sustaining. Worth remembering for the
-    real init gate (9): if p_z and b start inconsistent with the first
-    measurement, the filter locks itself out.
     """
     core.x.R_nv = so3.normalise(step0.R_dji @ step0.R_b_c @ step0.R_v_c.T)
     core.x.p = np.zeros(3) if p0 is None else np.asarray(p0, float).copy()

@@ -3,5 +3,4 @@
     odom_frame: "odom"
     base_frame: "base_link"
     publish_tf: true
-    innovation_log: ""        # set to a path to enable NIS logging
     

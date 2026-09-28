@@ -56,6 +56,8 @@ R_LINK_OPTICAL = np.array([[0.0, 0.0, 1.0],
                            [-1.0, 0.0, 0.0],
                            [0.0, -1.0, 0.0]])
 
+VO_DISCONT_HOLD = 3.0
+
 
 def stamp_to_sec(stamp):
     return stamp.sec + stamp.nanosec * 1e-9
@@ -107,6 +109,8 @@ class EkfNode(Node):
         self._rescale_dji = 0.0
         self._rescale_vo = 0.0
         self._rescale_n = 0
+        self._n_discont_last = 0
+        self._t_last_discont = None
 
         # ---- publishers ----
         self.pub_pose = self.create_publisher(
@@ -154,17 +158,9 @@ class EkfNode(Node):
     def on_gimbal(self, msg):
         t = stamp_to_sec(msg.header.stamp)
         roll = math.radians(msg.roll)
-        # [M] DJI gimbal pitch arrives as an unsigned 16-bit count in 0.1 deg
-        # units, so small negative pitch reads as ~6553.6 - |pitch|. This is
-        # the `pitch_needs_unwrap` flag the characterisation script already
-        # carried; camera_decoder corrects it, the raw topic does not.
         pitch_deg = msg.pitch
-        if pitch_deg > 3276.8:
+        if pitch_deg > 3276.8: # pitch is a signed integer but it is overflown by the app.
             pitch_deg -= 6553.6
-        # [M] pitch and yaw are negated relative to ROS convention; roll is
-        # not. Verified against camera_decoder's gimbal_base -> camera_link
-        # transform on F3_02: roll matches to 0.00 deg, pitch and yaw match
-        # only after negation.
         pitch = -math.radians(pitch_deg)
         yaw = -math.radians(msg.yaw)
         self.sched.on_gimbal(t, so3.rpy_to_R(roll, pitch, yaw) @ R_LINK_OPTICAL)
@@ -172,7 +168,7 @@ class EkfNode(Node):
     def on_attitude(self, msg):
         t = stamp_to_sec(msg.header.stamp)
         self._t_last_telemetry = t
-        self.sched.on_attitude(t, np.radians([msg.roll, msg.pitch, msg.yaw]))
+        self.sched.on_attitude(t, np.radians([msg.roll, msg.pitch, -msg.yaw]))
 
     def on_altitude(self, msg):
         t = stamp_to_sec(msg.header.stamp)
@@ -180,9 +176,6 @@ class EkfNode(Node):
         z = float(msg.altitude)
         self._last_alt = z
         self.sched.on_altitude(t, z)
-        # airborne gate: KeyAltitude reads exactly 0.000 when grounded, but
-        # ONLY before the first takeoff after power-up [M]; after a prior
-        # flight it reads an arbitrary offset. Gate on height, not on zero.
         if z > self.p.INIT_ALT_MIN:
             if self._airborne_since is None:
                 self._airborne_since = t
@@ -194,9 +187,6 @@ class EkfNode(Node):
         self._t_last_telemetry = t
         v_ned = np.array([msg.vector.x, msg.vector.y, msg.vector.z])
         self.sched.on_velocity(t, v_ned)
-        # Accumulated time above V_LOW, not elapsed time since first exceeding
-        # it. F6c drifted past 0.4 m/s once, waited 12 s, and initialised from
-        # marginal samples -- giving a bad `s` rather than refusing.
         if self._t_last_vel is not None and np.linalg.norm(v_ned) > self.p.V_LOW:
             self._excited_s += min(t - self._t_last_vel, 0.5)
         self._t_last_vel = t
@@ -235,13 +225,6 @@ class EkfNode(Node):
         if self.sched.needs_reinit:
             self.sched.needs_reinit = False
             if self.initialised:
-                # Do NOT drop out of `initialised`. A rebuild invalidates `s`
-                # alone -- p and b live in the nav frame (6.1) -- and dropping
-                # out stops publishing entirely. On F9_02 that cost 130 s of
-                # the flight, because the cold-start path then waits
-                # INIT_TRANSLATION_S for parallax the map no longer needs, and
-                # the aircraft was in a slow pass: 0.0 s of excitation
-                # accumulated in the 90 s that followed.
                 self._rescale_dji = 0.0
                 self._rescale_vo = 0.0
                 self._rescale_n = 0
@@ -264,9 +247,7 @@ class EkfNode(Node):
         self._maybe_rescale()
 
     def _init_wait(self, why):
-        """Say WHY init has not completed. Without this, a stalled init is
-        indistinguishable from a node that simply stopped publishing -- which
-        is what the 74.3 s pose bag looked like."""
+        
         self.get_logger().info(
             f"init waiting: {why}  ["
             f"excited={self._excited_s:.1f}/{self.p.INIT_TRANSLATION_S:.0f}s "
@@ -278,16 +259,6 @@ class EkfNode(Node):
     
     def _maybe_rescale(self):
         """Re-measure `s` after a rebuild by INTEGRATED PATH RATIO.
-
-        s = (path_dji / K_VEL) / path_vo, accumulated over RESCALE_PATH_M of
-        travel. Integration averages the 0.1 m/s quantisation out, so this
-        completes at inspection speed where the instantaneous v > V_LOW gate
-        never fires: on F9_02 the aircraft accumulated 0.0 s above V_LOW in
-        the 90 s after its rebuild.
-
-        Samples below V_MIN are skipped: there DJI reads exactly zero while VO
-        still moves, which would bias `s` low. The residual dead-zone bias
-        above V_MIN is real but small against a 3.8x reset error.
         """
         if not self._rescale_pending:
             return
@@ -320,17 +291,7 @@ class EkfNode(Node):
     # ======================================================= initialisation
     def _try_init(self, t, pose, status):
         """filter_design.md 9.
-
-        Gated on: telemetry flowing, aircraft airborne, VO healthy, and enough
-        translation for monocular parallax. Scale is ESTIMATED, not assumed,
-        from K_VEL^-1 |v_dji| / (|dp_v|/dt) over an excited window, requiring
-        |v_dji| > V_LOW so the quantisation dead zone does not bias it.
         """
-        # Keep the frontend warm from the FIRST frame. The queue has to drain
-        # so that _last_R_dji, _last_v_enu and _last_inc get populated --
-        # otherwise the guards below wait forever on values that only this
-        # call can produce. Core updates before init are harmless: the state
-        # is overwritten wholesale at the bottom of this method.
         self.sched.on_vo(t, pose, status)
 
         if not status.pose_valid:
@@ -340,12 +301,6 @@ class EkfNode(Node):
             self._init_wait("not airborne")
             return
         
-        # Collect FIRST, and unconditionally. This used to sit BELOW the
-        # excitation gate, so no sample could be taken until 12 s of motion
-        # above V_LOW had already accumulated -- the two requirements ran in
-        # SERIES when they describe the same thing. [M] F6 reached
-        # excited=12.1/12 s and landed with 17/60 samples; F6c and F9 never
-        # reached 12 s and collected 0. Four of seven bags published nothing.
         inc = self.sched._last_inc
         v = float(np.linalg.norm(self.sched._last_v_enu))
         
@@ -359,12 +314,6 @@ class EkfNode(Node):
                     (inc.dp_v / inc.dt,
                      np.asarray(self.sched._last_v_enu, float).copy()))
 
-        # Observability stated as PATH, not TIME. `s` needs metric travel, and
-        # 60 samples spanning INIT_PATH_M of it IS that evidence.
-        # INIT_TRANSLATION_S was sized for monocular parallax, which
-        # ORB-SLAM3 has already had by the time it reports pose_valid -- the
-        # gate was redundant with VO's own initialisation and unsatisfiable on
-        # inspection profiles.
         if len(self._init_samples) < 60 or self._init_path < self.p.INIT_PATH_M:
             self._init_wait(
                 f"collecting (v={v:.2f} m/s, "
@@ -393,19 +342,8 @@ class EkfNode(Node):
         self.core.x = State(self.p)
         self.core.x.s = s0
         self.core.s_ref = s0
-        # `n` has its origin at TAKEOFF, but 9 gates init on 12 s of
-        # translation AFTER takeoff, so p = 0 makes p_z inconsistent with the
-        # first altitude measurement by the whole height. h(x) = p_z + b then
-        # NIS-rejects, and p_z is observed by nothing else, so the rejection is
-        # self-sustaining. Measured in sim: 240 of ~800 altitude updates
-        # rejected and a permanent 1.5 m z offset. Datum p_z from the
-        # measurement; `b` keeps its prior.
         if self._last_alt is not None:
             self.core.x.p[2] = float(self._last_alt) - self.p.b_prior_mean
-        # Do NOT keep P0_scale here: init just MEASURED s from 20 samples, and
-        # throwing that away leaves sigma_s ~ 1.0 on a value of ~1.5, so the
-        # Kalman gain on s is large enough for one innovation to swing it by
-        # an order of magnitude -- or negative (observed at s = -0.9998).
         if self.p.estimate_scale > 0.5:
             sd = (float(np.std(self._init_samples))
                   / np.sqrt(len(self._init_samples)))
@@ -414,12 +352,7 @@ class EkfNode(Node):
             self.core.hold_scale()
         self.core.x.R_nv = so3.normalise(
             self.sched._last_R_dji @ R_bc @ pose.R.T)
-
-        # [M] DJI attitude yaw and DJI velocity NED use DIFFERENT yaw datums.
-        # Measured 51.84 deg +- 3.81 on F9_02, constant in time (fitted slope
-        # +0.013 deg per deg of heading). The filter has ONE nav frame, so no
-        # single R_n_v satisfies both updates -- the tighter R wins and the
-        # other is permanently inconsistent. Give velocity its own offset.
+        
         ang = []
         for w_v, v_e in self._psi_samples:
             u_w = self.core.x.R_nv @ w_v
@@ -441,6 +374,8 @@ class EkfNode(Node):
         self.core.n_vel_reason = {"below_V_MIN": 0, "NIS": 0, "applied": 0}
         self.core.n_s_clamped = 0
         self.sched.builder.n_discont = 0
+        self._n_discont_last = 0          # keep in step with the line above
+        self._t_last_discont = None
         self.sched.builder.n_flags = {}
         self.sched.q.n_late = {0: 0, 1: 0, 2: 0}
         self.get_logger().info(
@@ -454,22 +389,14 @@ class EkfNode(Node):
     def _publish(self, t, pose):
         R_bc = self.sched.att.at(t)
         if R_bc is None:
-            # Gimbal runs at 13.8 Hz against VO at ~19 Hz, so the VO stamp is
-            # not always bracketed and interpolation is unavailable (4.1 step
-            # 4 forbids a ZOH fallback). Count it -- silently dropping output
-            # looked like a rate problem.
             self._n_no_gimbal += 1
             return
         self._n_pub += 1
-        # Orientation is NOT a state: composed at publish time from the
-        # filtered frame estimate and the latest VO and gimbal attitudes (8).
         R_n_b = self.core.body_attitude(pose.R, R_bc)
         q = so3.R_to_quat(R_n_b)
         x = self.core.x
 
         msg = PoseWithCovarianceStamped()
-        # Stamp with the VO stamp, never now(): the pose is as old as the
-        # frame it came from.
         msg.header.stamp = rclpy.time.Time(seconds=t).to_msg()
         msg.header.frame_id = self.odom_frame
         msg.pose.pose.position.x = float(x.p[0])
@@ -480,9 +407,6 @@ class EkfNode(Node):
         msg.pose.pose.orientation.z = float(q[2])
         msg.pose.pose.orientation.w = float(q[3])
 
-        # 6x6: P_pp top-left; P_theta + R_att bottom-right (documented proxy --
-        # P_theta is only the FRAME error, VO's relative-attitude error is
-        # unmodelled); P_p_theta off-diagonal, which is tracked and real.
         C = np.zeros((6, 6))
         C[:3, :3] = x.P[IDX_P, IDX_P]
         srp = self.p.sigma_rp0
@@ -513,32 +437,32 @@ class EkfNode(Node):
         st.sigma_scale = float(x.sigma_s)
         st.alt_bias = float(x.b)
         st.sigma_alt_bias = float(x.sigma_b)
-        # 7: monitor the s-b off-diagonal, not just the marginals -- altitude
-        # reaches s only through it.
         st.cov_scale_bias = float(x.cov_s_b)
 
         flags = []
-        if x.sigma_s > self.p.SIGMA_S_MAX:
+        if x.sigma_s > self.p.SIGMA_S_MAX * x.s:
             flags.append("SIGMA_S_MAX")
         if x.s <= 1.01e-3:
-            # `s` is at the floor, so p+ = p + 1e-3*u and position is frozen
-            # by construction. [M] F6 sat here for 23 s of a 43 s flight and
-            # |dp_est|/|dp_gt| measured 0.003 over 1 s windows. This is a hard
-            # failure, distinct from a merely uncertain scale.
             flags.append("S_CLAMPED")
-        if self.sched.builder.n_discont:
-            flags.append(f"vo_discont={self.sched.builder.n_discont}")
+        if self._rescale_pending:
+            flags.append("S_UNRESCALED")
+        n_disc = self.sched.builder.n_discont
+        if n_disc != self._n_discont_last:
+            self._n_discont_last = n_disc
+            self._t_last_discont = stamp_to_sec(header.stamp)
+        if self._t_last_discont is not None:
+            age = stamp_to_sec(header.stamp) - self._t_last_discont
+            if age < 0.0:
+                # stamps went backwards (bag restart under sim time)
+                self._t_last_discont = None
+            elif age < VO_DISCONT_HOLD:
+                flags.append(f"vo_discont={n_disc}")
         if self._t_last_telemetry is not None:
             gap = stamp_to_sec(header.stamp) - self._t_last_telemetry
             if gap > self.p.TRANSPORT_GAP:
                 flags.append("TRANSPORT_GAP")
         if not self.sched.ready:
             flags.append("VO_GAP")
-
-        # NOTE: transport gap is NOT reliably detectable today. Dedupe happens
-        # at source, so a stationary drone and a dead link look identical on
-        # the wire -- a grounded bag published at 1.5 Hz with a healthy link.
-        # Fix is a fixed-rate liveness heartbeat in dji_node (6).
 
         st.degraded = bool(flags)
         st.flags = flags
@@ -552,9 +476,6 @@ class EkfNode(Node):
         for inn in self.sched.innovations:
             y = np.atleast_1d(np.asarray(inn.y, float))
             y = np.pad(y, (0, 3 - len(y)))
-            # h is None for the below-V_MIN early return and for attitude,
-            # which has no prediction worth logging; pad to a fixed width so
-            # the CSV stays rectangular.
             h = (np.zeros(3) if inn.h is None
                  else np.atleast_1d(np.asarray(inn.h, float)))
             h = np.pad(h, (0, 3 - len(h)))
