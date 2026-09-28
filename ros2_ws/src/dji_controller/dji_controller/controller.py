@@ -23,6 +23,10 @@ import numpy as np
 from collections import deque
 from rclpy.time import Time
 from drone_interfaces.msg import RelativeAltitudeStamped, AttitudeStamped
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+
+CMD_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                     history=HistoryPolicy.KEEP_LAST, depth=10)
 
 class ClockOffsetTracker:
     """Maps Wildbridge monotonic clock onto the ROS clock."""
@@ -174,7 +178,7 @@ class DjiNode(Node):
             # Body frame. linear.x forward, linear.y lateral, linear.z up,
             # angular.z yaw rate in rad/s (converted to deg/s before sending).
             self.create_subscription(
-                TwistStamped, 'command/vel', self.vel_callback, 10)
+                TwistStamped, 'command/vel', self.vel_callback, CMD_QOS)
             self.get_logger().info("Subscribed to command/vel (advanced velocity mode)")
         else:
             # Virtual stick control subscriber (leftX, leftY, rightX, rightY)

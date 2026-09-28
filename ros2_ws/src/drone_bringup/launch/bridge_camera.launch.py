@@ -27,13 +27,12 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{
             "command_mode": "vel",      # "stick" or "vel"
             "v_max_horizontal": 1.0,    # m/s
-            "v_max_vertical": 0.5,      # m/s
-            "yaw_rate_max": 30.0,       # deg/s
-            # Resolved in the lab, see the app document section 8b.
+            "v_max_vertical": 0.4,      # m/s
+            "yaw_rate_max": 25.0,       # deg/s
             "sign_vx": 1.0,
-            "sign_vy": 1.0,
+            "sign_vy": -1.0,
             "sign_vz": 1.0,
-            "sign_yaw": 1.0,
+            "sign_yaw": -1.0,
         }],
     )
 
