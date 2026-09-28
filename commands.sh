@@ -25,3 +25,6 @@ nc 192.168.50.18 8081 \
 
 # gimbal joint attitude "gimbalJointAttitude":{"pitch":1.9000000000000001,"roll":0.1,"yaw":0}
 # attitude "attitude":{"pitch":0,"roll":-0.8,"yaw":142.5}
+
+# mmd to pdf
+mmdc -i tf_tree.mmd        -o figures/tf_tree.pdf        -b transparent --pdfFit
