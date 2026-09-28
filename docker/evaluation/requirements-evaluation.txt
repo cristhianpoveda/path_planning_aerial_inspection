@@ -1,3 +1,6 @@
 # Python (pip) packages for the evaluation service.
+
+numpy>=1.23.5,<1.25
+
 matplotlib
 rosbags

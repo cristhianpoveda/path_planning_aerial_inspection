@@ -18,6 +18,12 @@ RUN apt-get update \
 COPY docker/evaluation/requirements-evaluation.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
+# --- OpenCV >= 4.7 for ArUco detection
+
+RUN pip3 install --no-cache-dir --no-deps \
+        opencv-contrib-python-headless==4.10.0.84 \
+    && python3 -c "import cv2, numpy as np, scipy.signal; v=tuple(int(x) for x in cv2.__version__.split('.')[:2]); assert v>=(4,7), cv2.__version__; assert np.__version__.startswith('1.'), np.__version__; d=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50); cv2.aruco.ArucoDetector(d, cv2.aruco.DetectorParameters()).detectMarkers(np.zeros((64,64), np.uint8)); print('opencv', cv2.__version__, 'numpy', np.__version__, 'scipy ok, aruco ok')"
+
 # --- non-root 'ros' user with passwordless sudo
 RUN groupadd --gid ${USER_GID} ${USERNAME} 2>/dev/null || true \
     && useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash ${USERNAME} 2>/dev/null || true \

@@ -1,1 +1,4 @@
 # Python (pip) packages for the navigation service.
+numpy>=1.23.5,<1.25
+python-tsp==0.4.0
+networkx
