@@ -1,0 +1,24 @@
+%% The fixed-point loop — planner slide
+%% Reads as: score, cover, order, speed, forecast — then score again.
+
+flowchart LR
+
+    SCORE["Score"]
+    COVER["Cover"]
+    ORDER["Order"]
+    SPEED["Speed"]
+    FCAST["Forecast"]
+
+    SCORE --> COVER
+    COVER --> ORDER
+    ORDER --> SPEED
+    SPEED --> FCAST
+    FCAST --> SCORE
+
+    style SCORE fill:#eef,stroke:#447,stroke-width:2px,color:#222
+    style COVER fill:#fff,stroke:#666,color:#222
+    style ORDER fill:#fff,stroke:#666,color:#222
+    style SPEED fill:#fff,stroke:#666,color:#222
+    style FCAST fill:#fff,stroke:#666,color:#222
+
+    linkStyle 4 stroke:#a33,stroke-width:3px

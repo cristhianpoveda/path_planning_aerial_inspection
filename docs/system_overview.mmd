@@ -1,0 +1,22 @@
+%% The closed chain — motivation slide
+%% Reads as: Plan determines uncertainty, uncertainty spreads standoff,
+%% standoff sets resolution, resolution scores the plan.
+
+flowchart LR
+
+    PLAN["Plan"]
+    UNC["Uncertainty"]
+    STAND["Standoff"]
+    RES["Resolution"]
+
+    PLAN -->|determines| UNC
+    UNC -->|spreads| STAND
+    STAND -->|sets| RES
+    RES -->|scores| PLAN
+
+    style PLAN fill:#eef,stroke:#447,stroke-width:2px,color:#222
+    style UNC fill:#fff,stroke:#666,color:#222
+    style STAND fill:#fff,stroke:#666,color:#222
+    style RES fill:#fff,stroke:#666,color:#222
+
+    linkStyle 3 stroke:#a33,stroke-width:3px
