@@ -3,29 +3,20 @@
 evaluate_pose.py -- STEP 23: the estimated pose against OptiTrack.
 
 Answers, in order:
-  1. is `s` right?  Umeyama with scale FREE, per segment. The fitted scale is
-     the residual factor: 1.00 means `s` is correct and any external
-     disagreement is in the reference, not the filter.
-  2. what is the actual accuracy?  RPE over 1 s and 2 s windows, per segment,
-     which is what filter_design.md 7 asks for (p_x, p_y are dead-reckoned, so
-     ATE measures elapsed time, not quality -- it is NOT reported).
-  3. where does the error live?  RPE is reported three ways: frame-free
-     magnitude ratio (no alignment at all), rotation-only, and rotation+scale.
-     The differences separate a scale error from a frame error from noise.
+  1. is `s` right?
+  2. what is the actual accuracy?
+  3. where does the error live?
 
 Three timeline facts this depends on, all verified in the code:
   * localisation/pose is stamped with the VO stamp AFTER VO_DELAY is
     subtracted (ekf_node._publish, frontend.Scheduler.on_vo), so it sits on
-    the ATTITUDE timeline.
+    the attitude timeline.
   * vo/status is stamped with the RAW camera stamp (slam_node.cpp:
     st.header.stamp = msg->header.stamp), ~VO_DELAY ahead of the pose
     timeline. Epoch boundaries are shifted before use.
   * mocap is on its own clock; the offset is FITTED here rather than assumed,
     by minimising post-alignment RMSE, and reported so it can be checked
     against the independently measured attitude lag.
-
-Segmentation is on vo_epoch: a map rebuild gives the new map an arbitrary
-scale, so a trajectory-wide number would average incomparable things.
 
 Run:
     python3 evaluate_pose.py POSE_BAG MOCAP_BAG --flight FLIGHT_BAG \
@@ -124,10 +115,6 @@ def rpe(P, Q, R, c, dt_grid, win_s):
 
 def fit_offset(t_e, p_e, t_g, p_g, lo, hi, grid, scan):
     """Fit the mocap time offset on ONE segment.
-
-    Fitting globally on the longest segment is wrong: Umeyama with scale free
-    trades time offset against scale, so a mis-scaled segment drags the offset
-    with it and then corrupts every other segment's numbers.
     """
     best, best_r = 0.0, np.inf
     for d in np.arange(-scan, scan, 0.005):
@@ -238,10 +225,6 @@ def main():
         r2 = rpe(P, Q, R, c, a.grid, 2.0)
         rf = rpe(P, Q, np.eye(3), 1.0, a.grid, 1.0)      # frame-free ratio
         rp = rpe(P, Q, R_tilt, 1.0, a.grid, 1.0)         # published transform
-        # Frame fitted, scale NOT corrected: what the LIVE system produces.
-        # RPE1s% has the scale error removed by Umeyama, which the running
-        # filter cannot do. The gap between the two columns IS the cost of
-        # the scale error.
         ro = rpe(P, Q, R1, 1.0, a.grid, 1.0)
         ye = np.unwrap(np.interp(g, t_e, np.unwrap(yaw_of(q_e)))
                        - np.interp(g + d_seg, t_g,

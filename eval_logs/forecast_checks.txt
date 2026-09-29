@@ -1,0 +1,56 @@
+====================================================================
+SMOKE
+====================================================================
+filter.py surface used by scale_forecast:
+  ok    State(params)
+  ok    IDX_S
+  ok    EkfCore(params, state=...)
+  ok    Increment(dp_v, dl, dt, Sigma_v, t)
+  ok    core.propagate(inc)
+  ok    core.s_ref
+  ok    core.update_velocity(v_enu, inc, omega_yaw, t)
+  ok    core.update_altitude(z, vz, t)
+  ok    core.update_attitude(...)
+  ok    x.sigma_s
+  ok    x.R_nv
+
+any FAIL above means scale_forecast.py needs its call sites updated
+before the other two checks mean anything.
+
+====================================================================
+SCALE INVARIANCE
+====================================================================
+planning s -> final sigma_s/s
+  s = 0.5   sigma_s/s = 0.02314
+  s = 1.0   sigma_s/s = 0.01794
+  s = 2.0   sigma_s/s = 0.01562
+  s = 3.5   sigma_s/s = 0.01794
+  s = 5.0   sigma_s/s = 0.02300
+
+max relative spread 0.4816
+FAIL -- NOT invariant. q_s is absolute and dominates.
+       Either plan at the s the flight is expected to have
+       (unknowable), or make q_s relative: q_s_eff = q_s_rel*s^2.
+
+====================================================================
+SIGMA_S OVER A TOUR
+====================================================================
+ speed   dur_s    sig0  sig_end     min     max  range%
+   0.3    32.8  0.1000   0.1153  0.1000  0.1153    14.1
+       per waypoint: vp0=0.103  vp1=0.107  vp2=0.110  vp3=0.112  vp4=0.115
+       feasible=True 
+   0.4    24.6  0.1000   0.1116  0.1000  0.1116    11.0
+       per waypoint: vp0=0.103  vp1=0.105  vp2=0.107  vp3=0.109  vp4=0.112
+       feasible=True 
+   0.6    16.4  0.1000   0.0163  0.0162  0.1001   443.0
+       per waypoint: vp0=0.018  vp1=0.016  vp2=0.017  vp3=0.016  vp4=0.016
+       feasible=True 
+   0.8    12.3  0.1000   0.0142  0.0140  0.1001   518.0
+       per waypoint: vp0=0.016  vp1=0.014  vp2=0.014  vp3=0.014  vp4=0.014
+       feasible=True 
+
+Read it as: if 'range%' is a few percent at every speed, sigma_s
+is effectively constant over a tour. Predictions 7.4.2 and 7.4.3
+are then not observable and should be withdrawn -- 7.4.1, which
+depends only on |n_hat' p|, still holds.
+If the speeds separate, speed IS a live decision variable.

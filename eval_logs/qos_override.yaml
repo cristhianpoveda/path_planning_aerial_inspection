@@ -1,0 +1,20 @@
+/drone_1/setpoint:
+  reliability: best_effort
+  history: keep_last
+  depth: 10
+/drone_1/command/vel:
+  reliability: best_effort
+  history: keep_last
+  depth: 10
+/drone_1/localisation/pose:
+  reliability: best_effort
+  history: keep_last
+  depth: 10
+/drone_1/localisation/status:
+  reliability: best_effort
+  history: keep_last
+  depth: 10
+/drone_1/camera/image/compressed:
+  reliability: best_effort
+  history: keep_last
+  depth: 10

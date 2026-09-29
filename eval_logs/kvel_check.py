@@ -4,22 +4,6 @@ kvel_check.py -- STEP 32: measure K_VEL against mocap, with no filter involved.
 
     z = K_VEL * v_true       (DJI UNDER-reports)
 
-so K_VEL is the ratio of DJI-integrated path to mocap path over the same
-window. Integration, not regression: differentiating mocap at 100 Hz aliases
-noise and attenuated fitted gains by ~4.2x in the earlier analysis
-(filter_design.md 10), while integration does not.
-
-Why it matters: init computes s = (|v_dji| / K_VEL) / vo_speed, so
-s is proportional to 1/K_VEL. F9_02 init gives 3.627 while mocap says truth is
-~3.79-3.96; K_VEL = 0.91 * 3.627 / 3.85 = 0.857 would close that gap exactly.
-
-Also bins the gain by speed, which measures the quantisation dead-zone droop
-directly -- and therefore says whether V_LOW = 0.4 is the right threshold for
-the scale-hold gate in update_velocity.
-
-The mocap clock offset is FITTED (velocity cross-correlation) rather than
-assumed; a lag biases the ratio when speed is changing.
-
 Run:
     python3 kvel_check.py F9_02 F9_02_mocap [--win 3.0] [--vmin 0.15]
 """
@@ -59,13 +43,6 @@ def stamp(m):
 
 def mocap_speed(t, p, smooth_s=0.10, dt=DT):
     """Smoothed mocap speed on a uniform grid.
-
-    NOT raw arc length. Summing |dp| at 100 Hz adds the NOISE's own path
-    length: at 1 mm per-sample noise a true 0.9 m of travel measures 1.08 m,
-    so the ratio reads K_VEL = 0.75 when the truth is 0.91. The inflation
-    scales as noise/(speed*dt), which is why the raw method produced a
-    monotone rise with speed that LOOKS like dead-zone droop and is not.
-    Resample-then-smooth-then-differentiate first (filter_design.md 10).
     """
     g = np.arange(t[0], t[-1], dt)
     k = max(int(round(smooth_s / dt)) | 1, 3)

@@ -1,20 +1,6 @@
 #!/usr/bin/env python3
 """
-check_g2.py — analyse the G2 yaw-reference bag.  (rev 3)
-
-CONFIRMED (rev 2, section E): the mocap driver publishes the CONJUGATE
-orientation, i.e. R_body_world where ROS expects R_world_body. Applying R.T
-gives slope -0.00 and sd 0.63 deg, against slope +2.00 and sd 142 deg
-as-published. Position is unaffected. This script now applies that transform by
-default (--convention inverted) and still prints section E as a check.
-
-Sections:
-  A. mocap stream health (dedupe, gaps)
-  B. static heading holds -- detected from DJI yaw RANGE, not from a derivative
-  C. discontinuities
-  D. DJI heading vs DJI attitude yaw
-  E. orientation-convention verification
-  F. mocap<->nav tilt fit, and the sigma_rp that remains after removing it
+check_g2.py — analyse the G2 yaw-reference bag.
 
 Usage:
     python3 check_g2.py G2_yaw_reference --out ./g2_out
@@ -103,12 +89,7 @@ def read_heading(bagpath):
 
 
 def windowed_rate(t, Rs, baseline_s):
-    """Angular rate (deg/s) over a FIXED TIME BASELINE, not consecutive samples.
-
-    Differentiating orientation at the native 145 Hz turns ~0.05 deg of mocap
-    noise into ~7 deg/s, and ~0.2 deg into ~30 deg/s -- which is why the naive
-    rate never fell below the static threshold. Over a 0.2 s baseline the same
-    noise contributes well under 1 deg/s.
+    """Angular rate (deg/s) over a fixed time baseline, not consecutive samples.
     """
     t = np.asarray(t, float)
     n = len(t)
@@ -279,8 +260,6 @@ def main():
               f"{np.degrees(mu):12.2f}{flag}")
 
     # ---------------------------------------------------------------- F
-    # A constant tilt between the mocap and nav frames projects into roll/pitch
-    # as the drone yaws:  r = a cos(psi) + b sin(psi),  p = -a sin(psi) + b cos(psi)
     print("\n--- F. mocap<->nav tilt, and residual sigma_rp ---")
     psi = rpy_a[:, 2]
     A = np.vstack([

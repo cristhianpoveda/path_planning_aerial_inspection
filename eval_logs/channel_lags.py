@@ -2,30 +2,13 @@
 """
 channel_lags.py -- STEP 16: per-channel latency of DJI telemetry vs mocap.
 
-If the two clocks are compatible (they are -- three cues agreed to 18 ms), then
-a lag measured against mocap is NOT a clock offset. It is either a real
-transport/measurement latency on that channel, or a residual common clock
-offset shared by all of them. The two are separable the moment you measure
-more than one channel:
-
     lag_channel = clock_offset + latency_channel
 
-so the DIFFERENCES between channels are the real per-channel latencies, free of
-whatever the common term is. That difference is exactly what the filter needs:
-re-stamping is only correct for the part that is NOT common-mode
-(filter_design 5.1/5.3).
-
 Channels, each with a cue chosen to be sharp and unbiased:
-  attitude   yaw RATE          (yaw is immune to the tilt-under-accel bias
-                                that corrupts roll/pitch -- same choice as
-                                check_g2.py's sync_mocap force="yaw_rate")
+  attitude   yaw RATE          yaw is immune to the tilt-under-accel bias
   altitude   d(altitude)/dt    vs mocap v_z
   velocity   speed_vector z    vs mocap v_z   (NED -> ENU sign flip)
   velocity   |speed_vector|    vs mocap |v|
-
-Mocap is DEDUPLICATED first: 7.6% of consecutive poses in F9_02 are
-bit-identical, and interpolating through them makes velocity a comb.
-Orientation is CONJUGATED (check_g2.py rev 2, section E).
 
 Run:
     python3 channel_lags.py F9_02 F9_02_mocap

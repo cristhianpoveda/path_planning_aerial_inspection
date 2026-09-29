@@ -6,16 +6,6 @@ Characterise DJI telemetry (altitude, velocity, attitude, gimbal) against
 OptiTrack ground truth from rosbag2 recordings, and emit the constants needed
 by filter_design.md sections 5 and 10.
 
-Clock policy
-------------
-Telemetry topics carry header.stamp in the ground-station ROS clock (mapped
-from the phone monotonic clock by ClockOffsetTracker), so header stamps are
-used for them -- these are measurement times.
-
-OptiTrack stamps come from the mocap host, whose clock may not be synced, so
-the bag RECORD time is used for mocap instead. The residual offset between the
-two is estimated by cross-correlation and removed before any fit.
-
 Usage
 -----
     source install/setup.bash
@@ -23,8 +13,6 @@ Usage
 
 Each bag is analysed independently; whichever analyses the data supports are
 run. Pass --only alt,vel,att,gimbal to restrict.
-
-Deps: numpy, matplotlib, rosbag2_py (from ROS 2), PyYAML.
 """
 
 import argparse
@@ -56,13 +44,6 @@ HOVER_MIN_S = 5.0
 def read_bag(bagpath, mocap_bagpath=None):
     """Return dict of topic -> dict(arrays). Telemetry uses header stamps,
     mocap uses record time.
-
-    mocap_bagpath: optional second bag holding MOCAP_TOPIC, recorded in
-    ROS_DOMAIN_ID 0 at full rate. domain_bridge delivers ~15 Hz with
-    multi-second stalls against ~103 Hz at source, so mocap is recorded
-    separately. Both recorders run on the same host, so record times share one
-    clock and no extra alignment is needed. When given, it REPLACES any mocap
-    found in the main bag.
     """
     import rosbag2_py
     from rclpy.serialization import deserialize_message
@@ -129,17 +110,8 @@ def read_bag(bagpath, mocap_bagpath=None):
             p = m.pose.position if hasattr(m, "pose") else m.position
             q = m.pose.orientation if hasattr(m, "pose") else m.orientation
             P.append([p.x, p.y, p.z])
-            # The mocap4r2 driver publishes the CONJUGATE orientation:
-            # R_body_world where ROS convention is R_world_body. Verified on
-            # G2_yaw_reference -- as-published gives a yaw residual whose slope
-            # against DJI yaw is +2.00 with sd 142 deg (the signature of an
-            # inverted yaw sense); conjugating gives slope -0.00, sd 0.63 deg.
-            # Position is unaffected, which is consistent with a quaternion
-            # conjugation bug touching orientation only.
             Q.append([-q.x, -q.y, -q.z, q.w])
             T.append(tr)                      # RECORD time, see module docstring
-        # Domain 0 carries two publishers of this topic (the driver and a
-        # zenoh bridge), so some poses arrive twice, microseconds apart.
         T, P, Q = np.array(T), np.array(P, float), np.array(Q, float)
         order = np.argsort(T, kind="stable")
         T, P, Q = T[order], P[order], Q[order]
@@ -467,8 +439,6 @@ def characterise_velocity(d, out, name):
         -s * v_world[:, 0] + c * v_world[:, 1],
         v_world[:, 2]])
 
-    # Mask on the REFERENCE, not on v_dji: selecting on the dependent variable
-    # truncates the regression and biases the slope.
     moving = np.linalg.norm(v_dji, axis=1) > 0.15
     if moving.sum() < 50:
         res["note"] = "insufficient motion"
@@ -638,11 +608,6 @@ def characterise_attitude(d, out, name):
     res["att_rate_max_dps"] = float(np.degrees(np.nanmax(w_m)))
 
     # ---- sigma_rp vs horizontal acceleration -----------------------------
-    # sigma_rp tracks ACCELERATION, not angular rate: 0.08 deg static,
-    # 0.43 deg hover+yaw at 59 deg/s, 0.59 deg vertical-only, but 2.4-3.8 deg
-    # when translating. That is accelerometer-referenced tilt estimation:
-    # linear acceleration corrupts the gravity vector, giving atan(a/g).
-    # Resample to the grid FIRST, then smooth, then differentiate -- twice.
     ga = np.arange(t[0], t[-1], 1.0 / RESAMPLE_HZ)
     p_g = resample(d["mocap"]["t"], d["mocap"]["p"], ga)
     ks = np.ones(11) / 11.0                       # longer window: 2nd derivative

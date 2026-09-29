@@ -9,16 +9,6 @@ no filter involved: for each consecutive vo/pose pair, compare how far mocap
 says the drone actually moved against how far VO says it moved.
 
     s = true_distance / vo_distance
-
-This separates two very different failures:
-
-  * median lands near a stable value, but the filter picked something else
-    -> the init estimator is choosing bad samples (a node bug)
-  * median is unstable or scattered over decades
-    -> VO scale is not consistent on this flight (upstream, not the filter)
-
-The filter reported s = 4.46 on F9_02, while Umeyama against ground truth says
-it should have been ~0.73.
 """
 
 import argparse

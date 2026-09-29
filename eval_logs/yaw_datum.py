@@ -2,36 +2,6 @@
 """
 yaw_datum.py -- STEP 35: which DJI datum carries the 52 degree offset?
 
-The nav frame is seeded from DJI ATTITUDE yaw, and DJI VELOCITY (NED) is
-referenced to magnetic north. A constant ~52 deg rotation was measured between
-DJI velocity heading and the VO-derived heading in the nav frame. One of the
-two DJI datums is displaced; mocap breaks the tie because each can be compared
-against it independently:
-
-    A = heading(mocap velocity)  -  heading(ned_to_enu(v_dji))
-    B = yaw(mocap orientation)   -  yaw(DJI attitude)
-
-Both carry the same unknown mocap-frame yaw, so it CANCELS in A - B, which is
-the quantity the filter sees as the 52 deg.
-
-    A - B ~= 0      -> neither DJI datum is displaced relative to the other;
-                       the 52 deg lives in the VO chain (R_LINK_OPTICAL, the
-                       gimbal yaw negation, camera extrinsic).
-    A ~= 0, B ~= -52 -> DJI ATTITUDE yaw is displaced. The nav-frame seed is
-                       wrong; seed R_n_v from velocity heading instead.
-    B ~= 0, A ~= +52 -> DJI VELOCITY uses a different north than attitude.
-                       dtheta_z is doing real work; keep the yaw row enabled
-                       and give velocity its own yaw offset.
-
-Method notes, both learned the hard way earlier in this investigation:
-  * mocap velocity comes from resample-smooth-differentiate, NOT raw
-    differences: raw arc length at 100 Hz measures the noise's own path and
-    inflated a K_VEL estimate by 7-13%.
-  * mocap orientation is CONJUGATED (check_g2.py rev 2 section E).
-  * only windows above V_LOW are used: below the 0.1 m/s quantum the DJI
-    velocity DIRECTION is as unreliable as its magnitude.
-  * the mocap clock offset is fitted, not assumed.
-
 Run:
     python3 yaw_datum.py F9_02 F9_02_mocap [--vlow 0.4]
 """

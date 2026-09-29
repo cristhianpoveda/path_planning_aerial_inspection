@@ -3,23 +3,6 @@
 compare_gt.py -- ATE / RPE of localisation/pose against OptiTrack.
 
     python3 compare_gt.py F9_02_est F9_02_mocap --out ./gt_out
-
-Why Umeyama rather than a hardcoded transform: the `odom` origin is wherever
-the drone was when the filter INITIALISED (filter_design.md 9 sets p = 0
-there), not at takeoff, and its yaw datum is DJI attitude at that instant.
-Neither is knowable in advance, so the transform is estimated from the
-trajectories.
-
-Two alignments, and the difference between them is the point:
-
-  * WITH scale    -> the recovered factor IS the scale error. This is the
-                     number NIS cannot give you: filter_design.md 10 warns
-                     that a wrong scale converges self-consistently.
-  * WITHOUT scale -> ATE. Letting the alignment absorb scale would hide the
-                     quantity of interest.
-
-Positions only. The mocap conjugate-orientation bug never touched position, so
-none of that applies here.
 """
 
 import argparse
@@ -100,8 +83,6 @@ def main():
           f"{1.0 / np.median(np.diff(t_m)):.0f} Hz")
 
     # ---- time offset: scan for the one minimising rigid ATE ----------------
-    # The two recorders share a clock but not a latency; a residual offset of
-    # tens of ms was measured across all bags (mocap_clock_lag_s).
     best = None
     for dt in np.arange(-args.max_offset, args.max_offset + 1e-9, 0.005):
         lo = max(t_e[0], t_m[0] + dt)

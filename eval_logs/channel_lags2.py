@@ -2,14 +2,7 @@
 """
 channel_lags2.py -- STEP 17: per-channel latency, now including VO.
 
-Adds the row that actually matters. `update_velocity` never compares velocity
-against attitude or against mocap; it compares it against the VO increment. So
-the quantity VEL_DELAY must correct is
-
         velocity stamp  -  VO stamp
-
-and both are measured here against the same mocap reference, so the common
-clock term cancels in the difference exactly as it does for attitude.
 
 Two VO cues, both chosen to be independent of things VO does not know:
 
@@ -19,11 +12,6 @@ Two VO cues, both chosen to be independent of things VO does not know:
   vo |w|    angular rate from consecutive VO quaternions vs mocap angular
             rate. Rotation MAGNITUDE is invariant to the VO frame as well as
             to its scale, so this cue is immune to R_n_v being unknown.
-
-VO increments are masked where they are not trustworthy: dt outside
-[0.5, 2.0] x nominal, samples with pose_valid False, and any increment that
-spans a vo_epoch change (a map rebuild moves the frame, so |dp| is meaningless
-across it).
 
 Run:
     python3 channel_lags2.py F9_02 F9_02_mocap

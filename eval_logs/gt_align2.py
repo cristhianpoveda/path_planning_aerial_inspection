@@ -2,23 +2,12 @@
 """
 gt_align2.py -- STEP 15b: align on VELOCITY, with a data-health check first.
 
-Why v1 failed: mocap z is a plateau. Correlating two plateaus gives a broad
-peak (0.9204 against a 0.9144 sidelobe -- 0.006 of separation). Differentiate
-first: takeoff, landing and every accel/decel corner become sharp edges, and
-edges are what a cross-correlation can localise.
-
-Two INDEPENDENT cues are computed. If they agree the alignment is real; if
+Two independent cues are computed. If they agree the alignment is real; if
 they disagree by more than a sample period, it is not, and no amount of peak
 polish fixes that.
 
   cue A: |v| from mocap        vs |v| from /drone_1/speed_vector
   cue B: vertical speed, mocap vs speed_vector z (NED -> ENU sign flip)
-
-Also reports mocap HEALTH. A static-window orientation sd of exactly 0.000 deg
-is not a quiet sensor -- it means the pose is being repeated, either because
-the rigid body is untracked and Motive is holding the last value, or because a
-second publisher mirrors the topic (filter_design 3). Numbers derived from
-repeated samples are fiction, so this runs before anything else.
 
 Run:
     python3 gt_align2.py F9_02 F9_02_mocap [--out f9_02_aligned.npz]
@@ -78,9 +67,7 @@ def xcorr_offset(t_a, v_a, t_b, v_b, span=5.0, dt=0.01, t_lo=None, t_hi=None):
         hi = min(hi, t_hi)
     grid = np.arange(lo, hi, dt)
     a = np.interp(grid, t_a, v_a)
-    # A cue with no variance over the window carries no timing information;
-    # normalising it produces a meaningless correlation that peaks at the edge
-    # of the lag range. Refuse rather than return a number.
+    
     if a.std() < 1e-6 or np.interp(grid, t_b, v_b).std() < 1e-6:
         return float("nan"), 0.0, 0.0
     a = (a - a.mean()) / (a.std() + 1e-12)

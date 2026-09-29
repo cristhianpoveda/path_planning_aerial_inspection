@@ -1,250 +1,280 @@
 #!/usr/bin/env python3
-"""
-vo_delay.py -- STEP 19: measure VO_DELAY precisely, and check it is constant.
+"""vo_delay.py -- measure VO_DELAY, and judge VO quality independently of the EKF.
 
-camera_decoder_node stamps every frame with get_clock().now() at the moment it
-leaves the decoder. No latency is subtracted -- data_flow.md describes
-"decode time minus VIDEO_LATENCY" but the code does not implement it. So the
-VO stamp is late by the whole OcuSync -> phone -> TCP -> PyAV path.
-
-Two improvements over channel_lags2.py:
-
-  1. MASKING. That script computed VO angular rate from ALL poses, including
-     ones spanning an epoch change or with pose_valid False. A map rebuild
-     injects an enormous spurious rotation, which is why the |w| peaks came
-     back at 0.34/0.71/0.16. Masked properly, |w| is the sharpest cue there is.
-
-  2. A MOCAP-FREE cue. Rotation MAGNITUDE is invariant to frame and scale, so
-     VO |w| can be compared directly against DJI attitude |w| -- both in the
-     flight bag, no mocap, no clock question at all. This measures
-     VO - attitude in one step, which is the differential the filter needs.
-
-Also splits the flight into segments and reports the delay in each: a constant
-can be corrected with one parameter, a drifting one cannot.
-
-Run:
-    python3 vo_delay.py F9_02 [--mocap F9_02_mocap] [--segments 4]
+    python3 vo_delay.py --bag step10c
+    python3 vo_delay.py --bag step10c --selftest
 """
 import argparse
-import sys
+import math
 
 import numpy as np
 
-try:
-    import rosbag2_py
-    from rclpy.serialization import deserialize_message
-    from rosidl_runtime_py.utilities import get_message
-except ImportError:
-    sys.exit("source your ROS 2 workspace first")
-
-T_ATT = "/drone_1/attitude"
-T_VO = "/drone_1/vo/pose"
-T_VOS = "/drone_1/vo/status"
-T_ALT = "/drone_1/relative_altitude"
-T_MOCAP = "/optitrack/rigid_bodies/dji_mini4"
-DT = 0.005
-PEAK_MIN = 0.40      # below this the correlation found noise
-MARGIN_MIN = 0.10    # peak must beat the sidelobes by this much
+TELEMETRY_LAG_S = 0.0732     # filter_design.md 4, velocity vs mocap
 
 
 def read_bag(path, topics):
-    r = rosbag2_py.SequentialReader()
-    r.open(rosbag2_py.StorageOptions(uri=path, storage_id="sqlite3"),
-           rosbag2_py.ConverterOptions("", ""))
-    have = {t.name: t.type for t in r.get_all_topics_and_types()}
-    out = {t: [] for t in topics if t in have}
-    while r.has_next():
-        tp, data, _ = r.read_next()
-        if tp in out:
-            out[tp].append(deserialize_message(data, get_message(have[tp])))
+    import rosbag2_py
+    from rclpy.serialization import deserialize_message
+    from rosidl_runtime_py.utilities import get_message
+
+    reader = rosbag2_py.SequentialReader()
+    reader.open(rosbag2_py.StorageOptions(uri=path, storage_id=''),
+                rosbag2_py.ConverterOptions('', ''))
+    types = {t.name: t.type for t in reader.get_all_topics_and_types()}
+    out = {t: [] for t in topics}
+    while reader.has_next():
+        topic, raw, t_recv = reader.read_next()
+        if topic in out:
+            out[topic].append((t_recv * 1e-9,
+                               deserialize_message(raw, get_message(types[topic]))))
     return out
 
 
-def stamp(m):
-    return m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+def resampled_speed(t, p, grid, smooth_s=0.10):
+    """Resample position onto a uniform grid, then differentiate and smooth.
 
-
-def rpy_to_R(r, p, y):
-    cr, sr, cp, sp, cy, sy = (np.cos(r), np.sin(r), np.cos(p),
-                              np.sin(p), np.cos(y), np.sin(y))
-    return np.array([
-        [cy*cp, cy*sp*sr - sy*cr, cy*sp*cr + sy*sr],
-        [sy*cp, sy*sp*sr + cy*cr, sy*sp*cr - cy*sr],
-        [-sp,   cp*sr,            cp*cr]])
-
-
-def quat_to_R(q):
-    q = q / np.linalg.norm(q)
-    x, y, z, w = q
-    return np.array([
-        [1-2*(y*y+z*z), 2*(x*y-z*w),   2*(x*z+y*w)],
-        [2*(x*y+z*w),   1-2*(x*x+z*z), 2*(y*z-x*w)],
-        [2*(x*z-y*w),   2*(y*z+x*w),   1-2*(x*x+y*y)]])
-
-
-def rate_from_R(t, Rs, baseline_s=0.20, mask=None):
-    """|angular rate| over a FIXED TIME BASELINE, stamped at the MIDPOINT.
-
-    Fixed baseline, not consecutive samples: differentiating orientation at
-    100+ Hz turns 0.05 deg of noise into 7 deg/s (check_g2.py, windowed_rate).
-    Midpoint, not the interval end: end-stamping biases the lag by +dt/2.
+    filter_design.md 12.4: resample -> smooth -> differentiate. Point-to-point
+    differentiation of a jittery series measures the noise's own path.
     """
-    t = np.asarray(t, float)
-    out_t, out_w = [], []
-    j = 0
-    for i in range(len(t)):
-        while j < i and t[i] - t[j] > baseline_s:
-            j += 1
-        if j == i:
-            continue
-        if mask is not None and not mask[i - 1:i + 1].all():
-            continue
-        if mask is not None and not mask[j:i + 1].all():
-            continue
-        dR = Rs[j].T @ Rs[i]
-        v = 0.5 * np.array([dR[2, 1] - dR[1, 2], dR[0, 2] - dR[2, 0],
-                            dR[1, 0] - dR[0, 1]])
-        ang = np.arctan2(np.linalg.norm(v), (np.trace(dR) - 1.0) / 2.0)
-        out_t.append(0.5 * (t[i] + t[j]))
-        out_w.append(ang / (t[i] - t[j]))
-    return np.array(out_t), np.array(out_w)
+    dt = grid[1] - grid[0]
+    pg = np.column_stack([np.interp(grid, t, p[:, k]) for k in range(3)])
+    v = np.gradient(pg, dt, axis=0)
+    k = max(1, int(round(smooth_s / dt)))
+    if k > 1:
+        w = np.ones(k) / k
+        v = np.column_stack([np.convolve(v[:, i], w, mode='same')
+                             for i in range(3)])
+    return np.linalg.norm(v, axis=1), pg
 
 
-def lag(t_a, v_a, t_b, v_b, lo, hi, span=1.0):
-    """Lag of `a` behind `b`, seconds. POSITIVE = a is late."""
-    grid = np.arange(max(lo, t_a[0], t_b[0]) + span,
-                     min(hi, t_a[-1], t_b[-1]) - span, DT)
-    if len(grid) < 200:
-        return float("nan"), 0.0, 0.0
-    a = np.interp(grid, t_a, v_a)
-    if a.std() < 1e-9:
-        return float("nan"), 0.0, 0.0
-    a = (a - a.mean()) / a.std()
-    lags = np.arange(-span, span, DT)
-    c = np.empty(len(lags))
-    for i, L in enumerate(lags):
-        b = np.interp(grid + L, t_b, v_b)
-        sd = b.std()
-        c[i] = float((a * ((b - b.mean()) / sd)).mean()) if sd > 1e-9 else 0.0
-    k = int(np.argmax(c))
-    if 0 < k < len(c) - 1:
-        y0, y1, y2 = c[k-1], c[k], c[k+1]
-        k += 0.5 * (y0 - y2) / (y0 - 2*y1 + y2 + 1e-15)
-    d = float(-span + k * DT)
-    side = c[np.abs(lags - d) > 0.3]
-    return -d, float(c.max()), float(side.max() if len(side) else 0.0)
+def best_lag(grid, a_sig, b_sig, max_lag=1.0):
+    """Lag L maximising correlation of a(t) with b(t - L).
+
+    Positive L means a LAGS b: the a series describes motion that happened L
+    seconds earlier.
+    """
+    dt = grid[1] - grid[0]
+    a = a_sig - a_sig.mean()
+    b = b_sig - b_sig.mean()
+    if a.std() < 1e-9 or b.std() < 1e-9:
+        return None, None
+    a /= a.std()
+    b /= b.std()
+    n = int(max_lag / dt)
+    lags = np.arange(-n, n + 1)
+    cc = np.array([np.dot(a, np.roll(b, k)) / len(a) for k in lags])
+    i = int(np.argmax(cc))
+    return float(lags[i] * dt), float(cc[i])
+
+
+def rot2(th):
+    c, s = math.cos(th), math.sin(th)
+    return np.array([[c, -s], [s, c]])
+
+
+def fit_yaw_scale(A, B):
+    """s, theta minimising || s R(theta) A - B ||, rows are 2D vectors."""
+    num = np.sum(A[:, 0] * B[:, 1] - A[:, 1] * B[:, 0])
+    den = np.sum(A[:, 0] * B[:, 0] + A[:, 1] * B[:, 1])
+    th = math.atan2(num, den)
+    AR = A @ rot2(th).T
+    s = float(np.sum(AR * B) / max(np.sum(AR * AR), 1e-12))
+    return s, th
+
+
+def section(t):
+    print("\n" + "=" * 78)
+    print(t)
+    print("=" * 78)
+
+
+def selftest():
+    print("SELF-TEST: injecting a known VO lag\n")
+    dt = 0.01
+    grid = np.arange(0, 120, dt)
+    true_lag = 0.27
+    # true motion: a few transits
+    v_true = 0.5 * (np.sin(2 * np.pi * grid / 20.0) > 0.3).astype(float)
+    p_true = np.column_stack([np.cumsum(v_true) * dt,
+                              np.zeros_like(grid), np.zeros_like(grid)])
+    # VO sees the same motion but its stamps are `true_lag` late
+    p_vo = np.column_stack([np.interp(grid - true_lag, grid, p_true[:, 0]),
+                            np.zeros_like(grid), np.zeros_like(grid)])
+    s_m, _ = resampled_speed(grid, p_true, grid)
+    s_v, _ = resampled_speed(grid, p_vo, grid)
+    lag, cc = best_lag(grid, s_v, s_m)
+    print(f"  injected {true_lag:.3f} s -> recovered {lag:.3f} s "
+          f"(corr {cc:.3f})")
+    print(f"  error {1000 * abs(lag - true_lag):.0f} ms")
+
+    A = np.random.default_rng(0).normal(size=(400, 2))
+    s_t, th_t = 0.31, math.radians(-73.0)
+    B = (A @ rot2(th_t).T) * s_t
+    s_f, th_f = fit_yaw_scale(A, B)
+    print(f"\n  injected scale {s_t:.3f} yaw {math.degrees(th_t):+.1f} "
+          f"-> recovered {s_f:.3f} {math.degrees(th_f):+.1f}")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("flight_bag")
-    ap.add_argument("--mocap", default=None)
-    ap.add_argument("--segments", type=int, default=4)
-    ap.add_argument("--span", type=float, default=1.0)
-    ap.add_argument("--baseline", type=float, default=0.20)
+    ap.add_argument('--bag')
+    ap.add_argument('--ns', default='/drone_1')
+    ap.add_argument('--grid', type=float, default=0.01)
+    ap.add_argument('--window', type=float, default=1.0)
+    ap.add_argument('--min-move', type=float, default=0.05)
+    ap.add_argument('--selftest', action='store_true')
     a = ap.parse_args()
 
-    f = read_bag(a.flight_bag, [T_ATT, T_VO, T_VOS, T_ALT])
+    if a.selftest:
+        selftest()
+        return
+    if not a.bag:
+        print("need --bag or --selftest")
+        return
 
-    t_a = np.array([stamp(x) for x in f[T_ATT]])
-    rpy = np.array([[x.roll, x.pitch, x.yaw] for x in f[T_ATT]])
-    if np.abs(rpy).max() > 2 * np.pi:
-        rpy = np.radians(rpy)
-    R_a = [rpy_to_R(*r) for r in rpy]
-    tw_a, w_a = rate_from_R(t_a, R_a, a.baseline)
+    n = a.ns.rstrip('/')
+    T = {'vo': f'{n}/vo/pose', 'st': f'{n}/vo/status',
+         'mocap': f'{n}/mocap/pose', 'spd': f'{n}/speed_vector'}
+    print(f"reading {a.bag}")
+    d = read_bag(a.bag, list(T.values()))
 
-    t_vo = np.array([stamp(x) for x in f[T_VO]])
-    q_vo = np.array([[x.pose.orientation.x, x.pose.orientation.y,
-                      x.pose.orientation.z, x.pose.orientation.w]
-                     for x in f[T_VO]])
-    p_vo = np.array([[x.pose.position.x, x.pose.position.y,
-                      x.pose.position.z] for x in f[T_VO]])
-    R_vo = [quat_to_R(q) for q in q_vo]
+    tv = np.array([r[0] for r in d[T['vo']]])
+    pv = np.array([[r[1].pose.position.x, r[1].pose.position.y,
+                    r[1].pose.position.z] for r in d[T['vo']]])
+    tm = np.array([r[0] for r in d[T['mocap']]])
+    pm = np.array([[r[1].pose.pose.position.x, r[1].pose.pose.position.y,
+                    r[1].pose.pose.position.z] for r in d[T['mocap']]])
 
-    ok = np.ones(len(t_vo), bool)
-    if T_VOS in f and len(f[T_VOS]):
-        t_s = np.array([stamp(x) for x in f[T_VOS]])
-        e = np.array([float(getattr(x, "vo_epoch", 0)) for x in f[T_VOS]])
-        pv = np.array([bool(getattr(x, "pose_valid", True)) for x in f[T_VOS]])
-        ep = np.interp(t_vo, t_s, e).round()
-        ok &= np.interp(t_vo, t_s, pv.astype(float)) > 0.5
-        ok &= np.concatenate([[True], np.diff(ep) == 0])
-        print(f"vo/status: {int(e.max()-e.min())} epochs, "
-              f"pose_valid {pv.mean():.1%}, mask keeps {ok.mean():.1%}")
-    tw_v, w_v = rate_from_R(t_vo, R_vo, a.baseline, mask=ok)
-    print(f"vo {len(t_vo)} poses at {len(t_vo)/(t_vo[-1]-t_vo[0]):.1f} Hz, "
-          f"{len(tw_v)} usable rate samples")
+    print(f"  vo/pose {len(tv)} msgs, mocap {len(tm)} msgs")
 
-    # Airborne window. Prefer mocap z: it has a true ground datum. The
-    # altitude fallback uses the 5th percentile as the floor, not the head of
-    # the record -- F6c does not start on the ground, and a median of the
-    # first 5% of samples then sits ABOVE the flight, inverting the window.
-    moc = None
-    if a.mocap:
-        moc = read_bag(a.mocap, [T_MOCAP])[T_MOCAP]
-        t_m0 = np.array([stamp(x) for x in moc])
-        z_m0 = np.array([x.pose.position.z for x in moc])
-        floor = np.percentile(z_m0, 5)
-        airb, tref = z_m0 > floor + 0.20, t_m0
+    t0 = max(tv[0], tm[0])
+    t1 = min(tv[-1], tm[-1])
+    grid = np.arange(t0, t1, a.grid)
+    s_vo, pv_g = resampled_speed(tv, pv, grid)
+    s_mo, pm_g = resampled_speed(tm, pm, grid)
+
+    # ==================================================== 1. VO_DELAY
+    section("1. VO_DELAY  (vo/pose stamp vs physical motion)")
+    lag, cc = best_lag(grid, s_vo, s_mo)
+    if lag is None:
+        print("  insufficient variation to correlate")
+        return
+    print(f"  WHOLE FLIGHT (unreliable if the scale changes per epoch):")
+    print(f"  against mocap:        {lag:+.3f} s   (correlation {cc:.3f})")
+    print("  Positive means the vo/pose stamp is LATE: the motion it describes")
+    print(f"  happened {1000 * lag:.0f} ms before the stamp says.")
+
+    if d[T['spd']]:
+        ts = np.array([r[0] for r in d[T['spd']]])
+        vs = np.array([[r[1].vector.x, r[1].vector.y, r[1].vector.z]
+                       for r in d[T['spd']]])
+        s_dji = np.interp(grid, ts, np.linalg.norm(vs, axis=1))
+        lag2, cc2 = best_lag(grid, s_vo, s_dji)
+        if lag2 is not None:
+            print(f"\n  against DJI velocity: {lag2:+.3f} s   "
+                  f"(correlation {cc2:.3f})")
+            print(f"  DJI velocity itself lags truth by "
+                  f"{1000 * TELEMETRY_LAG_S:.0f} ms, so this implies "
+                  f"{lag2 + TELEMETRY_LAG_S:+.3f} s")
+            print("  Agreement between the two routes is the consistency check.")
+
+    # ---- per-epoch, where the VO scale is constant -------------------
+    MIN_CORR = 0.40
+    print("\n  PER EPOCH  (scale is constant within an epoch)")
+    good = []
+    if d[T['st']]:
+        tst = np.array([r[0] for r in d[T['st']]])
+        est = np.array([r[1].vo_epoch for r in d[T['st']]])
+        eg = np.interp(grid, tst, est).round().astype(int)
+        print(f"    {'epoch':>6}{'dur s':>8}{'lag s':>9}{'corr':>8}   use")
+        for e_ in sorted(set(eg)):
+            i = np.where(eg == e_)[0]
+            if len(i) * a.grid < 15.0:
+                continue
+            g2 = grid[i]
+            l2, c2 = best_lag(g2, s_vo[i], s_mo[i])
+            if l2 is None:
+                continue
+            ok = c2 >= MIN_CORR and l2 > 0.0
+            if ok:
+                good.append((l2, len(i)))
+            print(f"    {e_:>6}{len(i) * a.grid:>8.0f}{l2:>+9.3f}{c2:>8.3f}"
+                  f"   {'yes' if ok else 'REJECT'}")
+
+    print()
+    if good:
+        w = np.array([g[1] for g in good], float)
+        v = np.array([g[0] for g in good], float)
+        est_lag = float(np.sum(v * w) / w.sum())
+        print(f"  >>> VO_DELAY = {est_lag:.3f} s   "
+              f"from {len(good)} usable epoch(s), "
+              f"spread {v.min():.3f}-{v.max():.3f}")
+        print("  >>> Weighted by segment length.")
     else:
-        tref = np.array([stamp(x) for x in f[T_ALT]])
-        z = np.array([float(x.altitude) for x in f[T_ALT]])
-        airb = z > np.percentile(z, 5) + 0.20
-    if not airb.any():
-        sys.exit("could not find an airborne window")
-    lo = tref[np.argmax(airb)] + 2.0
-    hi = tref[len(airb) - 1 - np.argmax(airb[::-1])] - 2.0
-    if hi <= lo:
-        sys.exit(f"airborne window is empty ({hi-lo:.1f} s)")
-    print(f"airborne window {hi - lo:.1f} s\n")
+        print("  >>> NO USABLE SEGMENT.")
+        print("  >>> Every epoch was either too short, too frozen, or gave a")
+        print(f"  >>> correlation below {MIN_CORR}. A lag from a flat")
+        print("  >>> correlation surface is noise, not a measurement.")
+        print("  >>> Do NOT change VO_DELAY on this bag. A negative result")
+        print("  >>> here is physically impossible and is the tell.")
 
-    print("MOCAP-FREE:  VO |w|  vs  DJI attitude |w|   (= VO - attitude)")
-    d, pk, sd = lag(tw_v, w_v, tw_a, w_a, lo, hi, a.span)
-    print(f"   whole flight   {d:+.4f} s   peak {pk:.4f}  margin {pk-sd:.4f}")
+    # ============================================ 2. VO INCREMENT QUALITY
+    section("2. VO INCREMENT QUALITY  (at the measured lag, filter not involved)")
+    k = int(round(a.window / a.grid))
+    # shift VO backwards by the measured lag so it aligns with mocap
+    shift = int(round(lag / a.grid))
+    pv_s = np.roll(pv_g, -shift, axis=0)
 
-    print(f"\n   per segment ({a.segments}):")
-    edges = np.linspace(lo, hi, a.segments + 1)
-    ds = []
-    for i in range(a.segments):
-        di, pi, si = lag(tw_v, w_v, tw_a, w_a, edges[i], edges[i+1], a.span)
-        # A segment with little rotation has nothing for the correlation to
-        # lock onto. Its "delay" is the argmax of noise, and including it in
-        # the spread manufactures drift that is not there.
-        good = np.isfinite(di) and pi > PEAK_MIN and (pi - si) > MARGIN_MIN
-        ds.append(di if good else np.nan)
-        txt = f"{di:+.4f}" if np.isfinite(di) else "  flat"
-        print(f"     {edges[i]-lo:6.1f}-{edges[i+1]-lo:6.1f} s   {txt}   "
-              f"peak {pi:.3f}  margin {pi-si:.3f}"
-              f"{'' if good else '   <- rejected, no usable peak'}")
-    ds = np.array([x for x in ds if np.isfinite(x)])
-    print(f"   {len(ds)} of {a.segments} segments usable")
-    if len(ds) > 1:
-        print(f"   spread {(ds.max()-ds.min())*1e3:.0f} ms   "
-              f"sd {ds.std()*1e3:.0f} ms   mean {ds.mean():+.4f} s")
-        print("   -> " + ("CONSTANT within this flight"
-                          if ds.std() < 0.030 else
-                          "DRIFTING within this flight"))
+    dV = pv_s[k:, :2] - pv_s[:-k, :2]
+    dM = pm_g[k:, :2] - pm_g[:-k, :2]
+    tw = grid[:-k]
+    mag = np.linalg.norm(dM, axis=1)
+    sel = mag > a.min_move
+    if shift > 0:
+        sel[-shift:] = False
+    dV, dM, tw, mag = dV[sel], dM[sel], tw[sel], mag[sel]
+    print(f"  {sel.sum()} windows of {a.window:.0f} s with > "
+          f"{100 * a.min_move:.0f} cm of true motion")
 
-    if moc is not None:
-        mo = moc
-        t_m = np.array([stamp(x) for x in mo])
-        p_m = np.array([[x.pose.position.x, x.pose.position.y,
-                         x.pose.position.z] for x in mo])
-        q_m = np.array([[x.pose.orientation.x, x.pose.orientation.y,
-                         x.pose.orientation.z, x.pose.orientation.w]
-                        for x in mo])
-        keep = np.concatenate([[True],
-                               (np.abs(np.diff(p_m, axis=0)).sum(1) > 0)])
-        t_m, q_m = t_m[keep], q_m[keep]
-        q_m = q_m * np.array([-1., -1., -1., 1.])       # conjugate
-        R_m = [quat_to_R(q) for q in q_m]
-        tw_m, w_m = rate_from_R(t_m, R_m, a.baseline)
-        print("\nCROSS-CHECK vs mocap |w|")
-        for lbl, tt, vv in (("VO", tw_v, w_v), ("attitude", tw_a, w_a)):
-            di, pi, si = lag(tt, vv, tw_m, w_m, lo, hi, a.span)
-            print(f"   {lbl:<10}{di:+.4f} s   peak {pi:.4f}  "
-                  f"margin {pi-si:.4f}")
+    if sel.sum() < 20:
+        print("  too few windows")
+        return
+
+    ev = None
+    if d[T['st']]:
+        tst = np.array([r[0] for r in d[T['st']]])
+        est = np.array([r[1].vo_epoch for r in d[T['st']]])
+        ev = np.interp(tw, tst, est).round().astype(int)
+
+    def report(label, iv):
+        if iv.sum() < 15:
+            return
+        A, B, m = dV[iv], dM[iv], mag[iv]
+        s_f, th_f = fit_yaw_scale(A, B)
+        pred = s_f * (A @ rot2(th_f).T)
+        err = np.median(np.linalg.norm(pred - B, axis=1) / m)
+        ratio = np.linalg.norm(A, axis=1) / m
+        frozen = float((ratio < 0.05 * max(s_f, 1e-9)).mean())
+        print(f"  {label:<12}{iv.sum():>6}{s_f:>10.3f}"
+              f"{math.degrees(th_f):>10.1f}{100 * err:>9.1f}"
+              f"{100 * frozen:>9.1f}")
+
+    print(f"\n  {'segment':<12}{'n':>6}{'scale':>10}{'yaw':>10}"
+          f"{'resid %':>9}{'frozen %':>9}")
+    print("  " + "-" * 56)
+    report("all", np.ones(len(dV), bool))
+    if ev is not None:
+        for e_ in sorted(set(ev)):
+            report(f"epoch {e_}", ev == e_)
+
+    print("\n  scale    : VO units per metre for that segment")
+    print("  yaw      : VO world frame vs mocap, arbitrary per epoch")
+    print("  resid %  : what is left after the best single scale and rotation")
+    print("  frozen % : windows where VO moved under 5 % of what it should")
+    print("\n  A low residual with low frozen means VO is a clean rigid scaling")
+    print("  of truth, and any remaining EKF error is in the filter or the")
+    print("  frontend. A high frozen fraction means VO itself stalls.")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
