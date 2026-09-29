@@ -1,0 +1,21 @@
+# 21 candidates, 5 standoffs, w = 1.0
+# nav origin [1.6, -3.4, 0.6]
+# V_LOW = 0.460 m/s true
+# Q_def peak 1.226 m, curvature -1.61
+
+transit allowed  speeds=(0.3, 0.45, 0.6, 0.9)
+  sigma_s/s_0   COUPLED  DECOUPLED     gain    realised
+     0.10       0.9964   0.9944   +0.0020   0.017
+     0.25       0.9943   0.9943   +0.0000   0.031
+     0.40       0.9943   0.9943   +0.0000   0.032
+
+inspection only  speeds=(0.2, 0.3, 0.38, 0.45)
+  sigma_s/s_0   COUPLED  DECOUPLED     gain    realised
+     0.10       0.9752   0.9749   +0.0003   0.101
+     0.25       0.9353   0.9309   +0.0045   0.250   <-- coupling pays
+     0.40       0.9103   0.8967   +0.0136   0.400   <-- coupling pays
+
+# 'realised' is the mean sigma_s/s the forecast reports along the
+# tour. Where it collapses to ~0.03 the two planners are identical
+# by construction, not by coincidence: sigma_d is then dominated by
+# the position term, which both planners see.

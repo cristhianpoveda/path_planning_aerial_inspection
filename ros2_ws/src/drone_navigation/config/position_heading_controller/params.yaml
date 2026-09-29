@@ -1,0 +1,24 @@
+# Values traceable to controller_plant_model.md.
+
+/drone_1/position_heading_controller_node:
+  ros__parameters:
+    rate_hz: 20.0
+
+    # Deadbands. No plant dead zone exists above 0.01 m/s.
+    deadband_xy: 0.02
+    deadband_z: 0.02
+    deadband_yaw_deg: 2.0
+
+    # Output slew limits.
+    slew_xy: 1.0
+    slew_z: 1.0
+    slew_yaw_deg: 60.0
+
+    ki_z: 0.0
+    i_z_max: 0.05
+
+    # Health gating.
+    pose_timeout: 0.5
+    attitude_timeout: 0.5
+    setpoint_timeout: 5.0
+    

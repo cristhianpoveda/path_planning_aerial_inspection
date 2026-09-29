@@ -1,0 +1,20 @@
+# no registration.yaml; planning at the default s = 3.0 [T]. The tour geometry is unaffected, but sigma_s/s and therefore E[Q] are only as good as this guess.
+# arena      GeometricMap(arena=Box(arena: centre=[3.5, -2.0, 1.5], extents=[5.0, 4.0, 3.0]), 2 obstacles, 5 targets, margin=0.35)
+# candidates 13 over 5 targets
+# optics     [T] band 1.02-1.77 m, peak 1.23 m
+# scale      s = 3.000, sigma_s/s = 0.100
+# V_LOW      0.460 m/s true; speeds [0.3, 0.45, 0.6, 0.9] straddle it
+# nav origin [3.5, -2.0, 1.5]  [T] arena centre, not the real one
+# T_ref      10.6 s  (fastest tour, DECOUPLED, held fixed)
+
+ variant     w      J        Qbar     That    T(s)   speeds
+ DECOUPLED 0.0   -1.0000  0.6326  1.000   10.6  [0.9, 0.9, 0.9, 0.9, 0.9, 0.9]
+ DECOUPLED 0.25  -0.5918  0.6326  1.000   10.6  [0.9, 0.9, 0.9, 0.9, 0.9, 0.9]
+ DECOUPLED 0.5   -0.3423  0.7661  1.451   15.4  [0.9, 0.9, 0.45, 0.6, 0.45, 0.6]
+ DECOUPLED 0.75  +0.1484  0.8354  1.913   20.3  [0.9, 0.6, 0.3, 0.45, 0.45, 0.45]
+ DECOUPLED 1.0   +0.8805  0.8805  2.868   30.4  [0.9, 0.3, 0.3, 0.3, 0.3, 0.3]
+ COUPLED   0.0   -1.0000  0.6311  1.000   10.6  [0.9, 0.9, 0.9, 0.9, 0.9, 0.9]
+ COUPLED   0.25  -0.5922  0.6311  1.000   10.6  [0.9, 0.9, 0.9, 0.9, 0.9, 0.9]
+ COUPLED   0.5   -0.3552  0.7710  1.481   15.7  [0.9, 0.6, 0.45, 0.9, 0.45, 0.6]
+ COUPLED   0.75  +0.1438  0.8364  1.934   20.5  [0.9, 0.45, 0.45, 0.45, 0.45, 0.45]
+ COUPLED   1.0   +0.8774  0.8774  2.868   30.4  [0.9, 0.3, 0.3, 0.3, 0.3, 0.3]

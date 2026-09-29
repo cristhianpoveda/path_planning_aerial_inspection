@@ -1,0 +1,76 @@
+quality model
+  PASS  GSD at 1.5 m matches 10  1.048 mm/px
+  PASS  w_min at 1.5 m inside the 2.1-3.1 mm measured in 10  2.21 mm
+  PASS  Q_def peaks inside the DoF band and is concave there  peak 1.226 m, Q'' -1.61
+  PASS  E[Q] < Q(E[d]) at the peak  0.946 vs 0.961, penalty -0.015
+  concave region 0.68-1.77 m; declared band [1.02, 3.4] -> using [1.02, 1.77]  (capped)
+  PASS  Q_def is concave everywhere in the band actually used  max Q'' = -0.013
+  PASS  sigma_d varies several-fold across the arena  0.086 m near origin, 0.406 m at 4 m, ratio 4.7x
+Gauss-Hermite quadrature
+  PASS  weights sum to 1  1.000000000000
+  PASS  5-node quadrature agrees with 400k-sample Monte Carlo  GH 0.9401 vs MC 0.9401
+localisation forecast
+  PASS  drone_localisation imports without ROS
+  PASS  importing the filter core did not pull in rclpy
+  V_MIN 0.172 m/s true, V_LOW 0.460 m/s true, estimate_scale 1.0
+  PASS  sigma_s grows at hover  0.300 -> 0.3098
+  PASS  sigma_s does not shrink below V_LOW  0.3098 at 0.44 m/s
+  PASS  sigma_s collapses above V_LOW  0.0325 at 0.61 m/s, 10x lower
+  PASS  Sigma_pp stays positive semi-definite  eigenvalues [0.004083, 0.004507, 0.031929]
+  PASS  the state does not drift under zero innovation  ds +0.00e+00, db +0.00e+00
+candidates
+  standoffs: [1.02, 1.226, 1.765]
+  PASS  every target has at least one feasible candidate  13 candidates, 2 rejected
+  PASS  target wall_a is covered  2 candidates
+  PASS  target wall_b is covered  3 candidates
+  PASS  target box2_a is covered  3 candidates
+  PASS  target box2_b is covered  2 candidates
+  PASS  target box1_a is covered  3 candidates
+  PASS  candidate wall_a@1.02 is in free space
+  PASS  candidate wall_a@1.02 sees its own patch
+  PASS  candidate wall_a@1.23 is in free space
+  PASS  candidate wall_a@1.23 sees its own patch
+  PASS  candidate wall_b@1.02 is in free space
+  PASS  candidate wall_b@1.02 sees its own patch
+  PASS  candidate wall_b@1.23 is in free space
+  PASS  candidate wall_b@1.23 sees its own patch
+  PASS  candidate wall_b@1.77 is in free space
+  PASS  candidate wall_b@1.77 sees its own patch
+  PASS  candidate box2_a@1.02 is in free space
+  PASS  candidate box2_a@1.02 sees its own patch
+  PASS  candidate box2_a@1.23 is in free space
+  PASS  candidate box2_a@1.23 sees its own patch
+  PASS  candidate box2_a@1.77 is in free space
+  PASS  candidate box2_a@1.77 sees its own patch
+  PASS  candidate box2_b@1.02 is in free space
+  PASS  candidate box2_b@1.02 sees its own patch
+  PASS  candidate box2_b@1.23 is in free space
+  PASS  candidate box2_b@1.23 sees its own patch
+  PASS  candidate box1_a@1.02 is in free space
+  PASS  candidate box1_a@1.02 sees its own patch
+  PASS  candidate box1_a@1.23 is in free space
+  PASS  candidate box1_a@1.23 sees its own patch
+  PASS  candidate box1_a@1.77 is in free space
+  PASS  candidate box1_a@1.77 sees its own patch
+  PASS  camera frames are orthonormal and right-handed
+  candidates covering more than one target: 0  -- set-cover has nothing to do, so the covering set is one candidate per target
+scoring
+  PASS  E[Q] is below Q(E[d]) in aggregate  19.817 vs 19.995, penalty -0.178
+  largest single penalty: box2_a@1.23/box2_a -0.028
+
+  candidate         target      Q(E[d])    E[Q]   penalty
+  wall_a@1.02      wall_a        1.857   1.840   -0.016
+  wall_a@1.23      wall_a        1.921   1.905   -0.017
+  wall_b@1.02      wall_b        1.857   1.840   -0.016
+  wall_b@1.23      wall_b        1.921   1.905   -0.017
+  wall_b@1.77      wall_b        1.575   1.575   -0.000
+  box2_a@1.02      box2_a        1.393   1.376   -0.017
+  box2_a@1.23      box2_a        1.441   1.413   -0.028
+  box2_a@1.77      box2_a        1.181   1.178   -0.003
+  box2_b@1.02      box2_b        1.393   1.377   -0.015
+  box2_b@1.23      box2_b        1.441   1.415   -0.026
+  box1_a@1.02      box1_a        1.393   1.385   -0.008
+  box1_a@1.23      box1_a        1.441   1.428   -0.014
+  box1_a@1.77      box1_a        1.181   1.180   -0.001
+
+all checks passed
