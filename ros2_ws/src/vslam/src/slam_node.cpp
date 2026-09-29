@@ -8,35 +8,11 @@
 // The pose is UP TO SCALE (monocular). The EKF resolves metric scale from
 // telemetry velocity + relative altitude.
 //
-// Three contracts the EKF depends on:
-//
-//  1. vo/status is published on EVERY frame, including unhealthy ones. VO is
-//     the EKF's propagation input, so losing it is a propagation gap that must
-//     be announced -- not an absence to be inferred from silence.
-//
-//  2. vo_epoch increments whenever the pose frame may have been rewritten.
-//     THREE independent detectors are needed; none is redundant:
-//
-//       a) map id change   -- catches Atlas map MERGE and map switch. Observed
-//                             in this arena with the tracking state remaining
-//                             OK throughout, so (b) and (c) both miss it.
-//       b) MapChanged()    -- catches in-map loop closure and global BA, which
-//                             leave the map id unchanged.
-//       c) leaving OK      -- catches reset / new-map-on-loss, where there are
-//                             no tracked map points to read an id from.
-//
-//     The EKF compares vo_epoch for inequality only and re-anchors on any
-//     change. Differencing two poses across such an event yields an increment
-//     corresponding to no physical motion, and because VO is the propagation
-//     input there is no measurement covariance available to reject it with.
+//  1. vo/status is published on EVERY frame, including unhealthy ones
 //
 //  3. No covariance is published. ORB-SLAM3 provides none, and the EKF derives
 //     increment noise from Sigma_base * g (filter_design.md 4.3). A fixed
 //     diagonal here would be ignored at best and believed at worst.
-//
-// The pose frame is `vo_world`, NOT `odom`. ORB-SLAM3's world frame is its
-// arbitrary first-keyframe frame and is not gravity-aligned; the EKF estimates
-// R_n_v to relate the two (filter_design.md 1, 2).
 
 #include <memory>
 #include <string>
@@ -94,9 +70,6 @@ public:
 
     pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("vo/pose", 10);
 
-    // RELIABLE with depth: the EKF sorts by stamp internally, so its processing
-    // order is deterministic given the same SET of messages. Dropping one is
-    // what breaks reproducibility under `ros2 bag play`.
     status_pub_ = create_publisher<drone_interfaces::msg::VoStatus>(
         "vo/status", rclcpp::QoS(10).reliable());
 
@@ -150,21 +123,8 @@ private:
 
     const int state = slam_->GetTrackingState();
 
-    // ---- MapChanged() must be called EXACTLY ONCE per frame ----------------
-    // Declared in include/System.h:131. Its implementation (src/System.cc:490)
-    // latches a static high-water mark against Atlas::GetLastBigChangeIdx(),
-    // which returns the CURRENT map's index (Atlas.cc:173). After a map switch
-    // the new map's index can sit below the latch, so this alone is not
-    // sufficient -- hence the map-id check below. Call it unconditionally: a
-    // big change can land while the tracker is briefly unhealthy.
     const bool map_changed = slam_->MapChanged();
 
-    // Feature counts: tracked map points (3D) and detected keypoints (2D).
-    //
-    // Note on keypoint counts: during NOT_INITIALIZED, Tracking uses
-    // mpIniORBextractor built with 5*nFeatures (Tracking.cc:601), so this
-    // number is ~5x larger before initialisation than after. Expected, not a
-    // fault.
     const auto map_points = slam_->GetTrackedMapPoints();
     const auto keypoints  = slam_->GetTrackedKeyPointsUn();
     int n_tracked = 0;
@@ -172,12 +132,6 @@ private:
     const int n_keypoints = static_cast<int>(keypoints.size());
 
     // ---- current Atlas map id, via a tracked map point --------------------
-    // System::mpAtlas is private, but MapPoint::GetMap() and Map::GetId() are
-    // both public, and tracked map points always belong to the active map.
-    // This reaches the map id with no patch to ORB-SLAM3.
-    //
-    // When tracking is unhealthy there may be no usable map point; hold the
-    // previous id in that case -- detector (c) covers it anyway.
     long unsigned int map_id = last_map_id_;
     bool got_map_id = false;
     for (auto * mp : map_points) {
@@ -217,9 +171,6 @@ private:
     last_state_ = state;
 
     // ---- status: ALWAYS, and BEFORE the early return ----------------------
-    // The EKF's failure tree (filter_design.md 6) and g_track (4.3) key on
-    // this. Publishing only on OK, or only on failure, leaves the EKF unable
-    // to distinguish "VO lost" from "camera stream stopped".
     drone_interfaces::msg::VoStatus st;
     st.header.stamp    = msg->header.stamp;   // same stamp as vo/pose
     st.header.frame_id = vo_frame_;
@@ -261,11 +212,7 @@ private:
   std::string vo_frame_;
   bool call_shutdown_{false};
 
-  // Monotonic for the life of the process. NEVER reset: the EKF compares it
-  // for inequality only, so a reset could make a real discontinuity read as
-  // "no change". A node restart resets it to 0, which correctly differs from
-  // whatever the EKF last held -> re-anchor, which is right, because a
-  // restarted ORB-SLAM3 has a brand-new map.
+  // Monotonic for the life of the process
   uint32_t vo_epoch_{0};
 
   long unsigned int last_map_id_{0};
