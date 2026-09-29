@@ -27,3 +27,5 @@ token
 *.npz
 
 eval_logs/*/
+eval_logs/*.log
+eval_logs/*.json
