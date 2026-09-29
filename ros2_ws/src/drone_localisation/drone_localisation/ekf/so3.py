@@ -76,13 +76,6 @@ def log(R):
     if th < np.pi - _NEAR_PI:
         return v * (th / s)
 
-    # Near pi, sin(th) -> 0 and `v` is a difference of O(1) matrix elements, so
-    # it loses relative precision. Recover the axis from the SYMMETRIC part
-    # instead. Writing th = pi - d:
-    #     (R + R^T)/2 + I = (d^2/2) I + (2 - d^2/2) a a^T
-    # so every column is parallel to `a` up to O(d^2). Using (R + I)/2 instead
-    # leaves the O(d) skew term in and is ~4 orders worse at d = 1e-4
-    # (measured: 6.6e-9 vs 1.1e-4). `v` still carries a usable sign.
     A = 0.5 * (R + R.T) + np.eye(3)
     k = int(np.argmax(np.diag(A)))
     axis = A[:, k]
